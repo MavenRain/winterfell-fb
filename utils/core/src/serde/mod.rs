@@ -141,7 +141,10 @@ pub trait Deserializable: Sized {
         source: &mut R,
         num_elements: usize,
     ) -> Result<Vec<Self>, DeserializationError> {
-        let mut result = Vec::with_capacity(num_elements);
+        let mut result = Vec::new();
+        result
+            .try_reserve(num_elements)
+            .map_err(|_| DeserializationError::TooManyElements(num_elements))?;
         for _ in 0..num_elements {
             let element = Self::read_from(source)?;
             result.push(element)
