@@ -3,13 +3,13 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
+use math::StarkField;
+use rand_utils::{rand_array, rand_value};
+
 use super::{
     BaseElement, ElementDigest, ElementHasher, FieldElement, Hasher, Rp62_248, ALPHA, INV_ALPHA,
     STATE_WIDTH,
 };
-use core::convert::TryInto;
-use math::StarkField;
-use rand_utils::{rand_array, rand_value};
 
 #[test]
 fn test_alphas() {
@@ -80,6 +80,20 @@ fn hash_elements_vs_merge() {
 
     let m_result = Rp62_248::merge(&digests);
     let h_result = Rp62_248::hash_elements(&elements);
+    assert_eq!(m_result, h_result);
+}
+
+#[test]
+fn merge_vs_merge_many() {
+    let elements: [BaseElement; 8] = rand_array();
+
+    let digests: [ElementDigest; 2] = [
+        ElementDigest::new(elements[..4].try_into().unwrap()),
+        ElementDigest::new(elements[4..].try_into().unwrap()),
+    ];
+
+    let m_result = Rp62_248::merge(&digests);
+    let h_result = Rp62_248::merge_many(&digests);
     assert_eq!(m_result, h_result);
 }
 

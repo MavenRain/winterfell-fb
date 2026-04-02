@@ -3,9 +3,12 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
-use crate::Hasher;
+use alloc::vec::Vec;
 use core::slice;
-use utils::{collections::Vec, iterators::*, rayon};
+
+use utils::{iterators::*, rayon};
+
+use crate::Hasher;
 
 // CONSTANTS
 // ================================================================================================
@@ -15,6 +18,8 @@ pub const MIN_CONCURRENT_LEAVES: usize = 1024;
 // PUBLIC FUNCTIONS
 // ================================================================================================
 
+/// Returns internal nodes of a Merkle tree constructed from the provided leaves.
+///
 /// Builds all internal nodes of the Merkle using all available threads and stores the
 /// results in a single vector such that root of the tree is at position 1, nodes immediately
 /// under the root is at positions 2 and 3 etc.
@@ -74,15 +79,15 @@ pub fn build_merkle_nodes<H: Hasher>(leaves: &[H::Digest]) -> Vec<H::Digest> {
 
 #[cfg(test)]
 mod tests {
-    use crate::hash::{ByteDigest, Sha3_256};
     use math::fields::f128::BaseElement;
-    use proptest::collection::vec;
-    use proptest::prelude::*;
+    use proptest::{collection::vec, prelude::*};
+
+    use crate::hash::{ByteDigest, Sha3_256};
 
     proptest! {
         #[test]
         fn build_merkle_nodes_concurrent(ref data in vec(any::<[u8; 32]>(), 256..257).no_shrink()) {
-            let leaves = ByteDigest::bytes_as_digests(&data).to_vec();
+            let leaves = ByteDigest::bytes_as_digests(data).to_vec();
             let sequential = super::super::build_merkle_nodes::<Sha3_256<BaseElement>>(&leaves);
             let concurrent = super::build_merkle_nodes::<Sha3_256<BaseElement>>(&leaves);
             assert_eq!(concurrent, sequential);

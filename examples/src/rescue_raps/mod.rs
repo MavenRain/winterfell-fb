@@ -3,16 +3,18 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
-use crate::{Blake3_192, Blake3_256, Example, ExampleOptions, HashFunction, Sha3_256};
 use core::marker::PhantomData;
-use log::debug;
-use rand_utils::rand_array;
 use std::time::Instant;
+
+use rand_utils::rand_array;
+use tracing::{field, info_span};
 use winterfell::{
-    crypto::{DefaultRandomCoin, ElementHasher},
-    math::{fields::f128::BaseElement, log2, ExtensionOf, FieldElement},
-    ProofOptions, Prover, StarkProof, Trace, VerifierError,
+    crypto::{DefaultRandomCoin, ElementHasher, MerkleTree},
+    math::{fields::f128::BaseElement, ExtensionOf, FieldElement},
+    Proof, ProofOptions, Prover, Trace, VerifierError,
 };
+
+use crate::{Blake3_192, Blake3_256, Example, ExampleOptions, HashFunction, Sha3_256};
 
 mod custom_trace_table;
 pub use custom_trace_table::RapTraceTable;
@@ -45,18 +47,15 @@ pub fn get_example(
     let (options, hash_fn) = options.to_proof_options(42, 4);
 
     match hash_fn {
-        HashFunction::Blake3_192 => Ok(Box::new(RescueRapsExample::<Blake3_192>::new(
-            chain_length,
-            options,
-        ))),
-        HashFunction::Blake3_256 => Ok(Box::new(RescueRapsExample::<Blake3_256>::new(
-            chain_length,
-            options,
-        ))),
-        HashFunction::Sha3_256 => Ok(Box::new(RescueRapsExample::<Sha3_256>::new(
-            chain_length,
-            options,
-        ))),
+        HashFunction::Blake3_192 => {
+            Ok(Box::new(RescueRapsExample::<Blake3_192>::new(chain_length, options)))
+        },
+        HashFunction::Blake3_256 => {
+            Ok(Box::new(RescueRapsExample::<Blake3_256>::new(chain_length, options)))
+        },
+        HashFunction::Sha3_256 => {
+            Ok(Box::new(RescueRapsExample::<Sha3_256>::new(chain_length, options)))
+        },
         _ => Err("The specified hash function cannot be used with this example.".to_string()),
     }
 }
@@ -72,10 +71,7 @@ pub struct RescueRapsExample<H: ElementHasher> {
 
 impl<H: ElementHasher> RescueRapsExample<H> {
     pub fn new(chain_length: usize, options: ProofOptions) -> Self {
-        assert!(
-            chain_length.is_power_of_two(),
-            "chain length must a power of 2"
-        );
+        assert!(chain_length.is_power_of_two(), "chain length must a power of 2");
         assert!(chain_length > 2, "chain length must be at least 4");
 
         let mut seeds = vec![[BaseElement::ZERO; 2]; chain_length];
@@ -89,7 +85,7 @@ impl<H: ElementHasher> RescueRapsExample<H> {
         // compute the sequence of hashes using external implementation of Rescue hash
         let now = Instant::now();
         let result = compute_permuted_hash_chains(&seeds, &permuted_seeds);
-        debug!(
+        println!(
             "Computed two permuted chains of {} Rescue hashes in {} ms",
             chain_length,
             now.elapsed().as_millis(),
@@ -111,46 +107,50 @@ impl<H: ElementHasher> RescueRapsExample<H> {
 
 impl<H: ElementHasher> Example for RescueRapsExample<H>
 where
-    H: ElementHasher<BaseField = BaseElement>,
+    H: ElementHasher<BaseField = BaseElement> + Sync,
 {
-    fn prove(&self) -> StarkProof {
+    fn prove(&self) -> Proof {
         // generate the execution trace
-        debug!(
-            "Generating proof for computing a chain of {} Rescue hashes\n\
-            ---------------------",
-            self.chain_length
-        );
+        println!("Generating proof for computing a chain of {} Rescue hashes", self.chain_length);
 
         // create a prover
         let prover = RescueRapsProver::<H>::new(self.options.clone());
 
-        // generate the execution trace
-        let now = Instant::now();
-        let trace = prover.build_trace(&self.seeds, &self.permuted_seeds, self.result);
-        let trace_length = trace.length();
-        debug!(
-            "Generated execution trace of {} registers and 2^{} steps in {} ms",
-            trace.width(),
-            log2(trace_length),
-            now.elapsed().as_millis()
-        );
+        // generate execution trace
+        let trace =
+            info_span!("generate_execution_trace", num_cols = TRACE_WIDTH, steps = field::Empty)
+                .in_scope(|| {
+                    let trace = prover.build_trace(&self.seeds, &self.permuted_seeds, self.result);
+                    tracing::Span::current().record("steps", trace.length());
+                    trace
+                });
 
         // generate the proof
         prover.prove(trace).unwrap()
     }
 
-    fn verify(&self, proof: StarkProof) -> Result<(), VerifierError> {
-        let pub_inputs = PublicInputs {
-            result: self.result,
-        };
-        winterfell::verify::<RescueRapsAir, H, DefaultRandomCoin<H>>(proof, pub_inputs)
+    fn verify(&self, proof: Proof) -> Result<(), VerifierError> {
+        let pub_inputs = PublicInputs { result: self.result };
+        let acceptable_options =
+            winterfell::AcceptableOptions::OptionSet(vec![proof.options().clone()]);
+
+        winterfell::verify::<RescueRapsAir, H, DefaultRandomCoin<H>, MerkleTree<H>>(
+            proof,
+            pub_inputs,
+            &acceptable_options,
+        )
     }
 
-    fn verify_with_wrong_inputs(&self, proof: StarkProof) -> Result<(), VerifierError> {
-        let pub_inputs = PublicInputs {
-            result: [self.result[1], self.result[0]],
-        };
-        winterfell::verify::<RescueRapsAir, H, DefaultRandomCoin<H>>(proof, pub_inputs)
+    fn verify_with_wrong_inputs(&self, proof: Proof) -> Result<(), VerifierError> {
+        let pub_inputs = PublicInputs { result: [self.result[1], self.result[0]] };
+        let acceptable_options =
+            winterfell::AcceptableOptions::OptionSet(vec![proof.options().clone()]);
+
+        winterfell::verify::<RescueRapsAir, H, DefaultRandomCoin<H>, MerkleTree<H>>(
+            proof,
+            pub_inputs,
+            &acceptable_options,
+        )
     }
 }
 

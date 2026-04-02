@@ -3,9 +3,9 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
-use super::{exp_acc, Digest, ElementHasher, Hasher};
-use core::convert::TryInto;
 use math::{fields::f62::BaseElement, FieldElement, StarkField};
+
+use super::{exp_acc, Digest, ElementHasher, Hasher};
 
 mod digest;
 pub use digest::ElementDigest;
@@ -46,21 +46,21 @@ const INV_ALPHA: u64 = 3074416663688030891;
 /// The hash function is implemented according to the Rescue Prime
 /// [specifications](https://eprint.iacr.org/2020/1143.pdf) with the following exception:
 /// * We set the number of rounds to 7, which implies a 40% security margin instead of the 50%
-///   margin used in the specifications (a 50% margin rounds up to 8 rounds). The primary
-///   motivation for this is that having the number of rounds be one less than a power of two
-///   simplifies AIR design for computations involving the hash function.
-/// * When hashing a sequence of elements, we do not append Fp(1) followed by Fp(0) elements
-///   to the end of the sequence as padding. Instead, we initialize one of the capacity elements
-///   to the number of elements to be hashed, and pad the sequence with Fp(0) elements only. This
-///   ensures consistency of hash outputs between different hashing methods (see section below).
-///   However, it also means that our instantiation of Rescue Prime cannot be used in a stream
-///   mode as the number of elements to be hashed must be known upfront.
+///   margin used in the specifications (a 50% margin rounds up to 8 rounds). The primary motivation
+///   for this is that having the number of rounds be one less than a power of two simplifies AIR
+///   design for computations involving the hash function.
+/// * When hashing a sequence of elements, we do not append Fp(1) followed by Fp(0) elements to the
+///   end of the sequence as padding. Instead, we initialize one of the capacity elements to the
+///   number of elements to be hashed, and pad the sequence with Fp(0) elements only. This ensures
+///   consistency of hash outputs between different hashing methods (see section below). However, it
+///   also means that our instantiation of Rescue Prime cannot be used in a stream mode as the
+///   number of elements to be hashed must be known upfront.
 ///
 /// The parameters used to instantiate the function are:
 /// * Field: 62-bit prime field with modulus 2^62 - 111 * 2^39 + 1.
 /// * State width: 12 field elements.
 /// * Capacity size: 4 field elements.
-/// * Number of founds: 7.
+/// * Number of rounds: 7.
 /// * S-Box degree: 3.
 ///
 /// The above parameters target 124-bit security level. The digest consists of four field elements
@@ -98,7 +98,7 @@ impl Hasher for Rp62_248 {
         // compute the number of elements required to represent the string; we will be processing
         // the string in 7-byte chunks, thus the number of elements will be equal to the number
         // of such chunks (including a potential partial chunk at the end).
-        let num_elements = if bytes.len() % 7 == 0 {
+        let num_elements = if bytes.len().is_multiple_of(7) {
             bytes.len() / 7
         } else {
             bytes.len() / 7 + 1
@@ -134,7 +134,7 @@ impl Hasher for Rp62_248 {
             // again from zero index.
             state[i] += BaseElement::new(u64::from_le_bytes(buf));
             i += 1;
-            if i % RATE_WIDTH == 0 {
+            if i.is_multiple_of(RATE_WIDTH) {
                 apply_permutation(&mut state);
                 i = 0;
             }
@@ -165,14 +165,17 @@ impl Hasher for Rp62_248 {
         ElementDigest::new(state[..DIGEST_SIZE].try_into().unwrap())
     }
 
+    fn merge_many(values: &[Self::Digest]) -> Self::Digest {
+        Self::hash_elements(ElementDigest::digests_as_elements(values))
+    }
+
     fn merge_with_int(seed: Self::Digest, value: u64) -> Self::Digest {
         // initialize the state as follows:
         // - seed is copied into the first 4 elements of the state.
-        // - if the value fits into a single field element, copy it into the fifth state element
-        //   and set the last capacity element to 5 (the number of elements to be hashed).
-        // - if the value doesn't fit into a single field element, split it into two field
-        //   elements, copy them into state elements 5 and 6, and set the last capacity element
-        //   to 6.
+        // - if the value fits into a single field element, copy it into the fifth state element and
+        //   set the last capacity element to 5 (the number of elements to be hashed).
+        // - if the value doesn't fit into a single field element, split it into two field elements,
+        //   copy them into state elements 5 and 6, and set the last capacity element to 6.
         let mut state = [BaseElement::ZERO; STATE_WIDTH];
         state[..DIGEST_SIZE].copy_from_slice(seed.as_elements());
         state[DIGEST_SIZE] = BaseElement::new(value);
@@ -209,7 +212,7 @@ impl ElementHasher for Rp62_248 {
         for &element in elements.iter() {
             state[i] += element;
             i += 1;
-            if i % RATE_WIDTH == 0 {
+            if i.is_multiple_of(RATE_WIDTH) {
                 apply_permutation(&mut state);
                 i = 0;
             }

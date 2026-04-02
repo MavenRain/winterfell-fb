@@ -3,11 +3,15 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
-use super::{Assertion, BTreeMap, ExtensionOf, FieldElement, Vec};
+use alloc::{collections::BTreeMap, vec::Vec};
+
 use math::{fft, polynom};
+
+use super::{Assertion, ExtensionOf, FieldElement};
 
 // BOUNDARY CONSTRAINT
 // ================================================================================================
+
 /// The numerator portion of a boundary constraint.
 ///
 /// A boundary constraint is described by a rational function $\frac{f(x) - b(x)}{z(x)}$, where:
@@ -18,7 +22,7 @@ use math::{fft, polynom};
 ///
 /// In addition to the value polynomial, a [BoundaryConstraint] also contains info needed to
 /// evaluate the constraint and to compose constraint evaluations with other constraints (i.e.,
-/// constraint composition coefficients).
+/// constraint composition coefficient).
 ///
 /// When the protocol is run in a large field, types `F` and `E` are the same. However, when
 /// working with small fields, `F` and `E` can be set as follows:
@@ -36,7 +40,7 @@ where
     column: usize,
     poly: Vec<F>,
     poly_offset: (usize, F::BaseField),
-    cc: (E, E),
+    cc: E,
 }
 
 impl<F, E> BoundaryConstraint<F, E>
@@ -44,14 +48,15 @@ where
     F: FieldElement,
     E: FieldElement<BaseField = F::BaseField> + ExtensionOf<F>,
 {
-    // CONSTRUCTOR
+    // CONSTRUCTORS
     // --------------------------------------------------------------------------------------------
+
     /// Creates a new boundary constraint from the specified assertion.
     pub(super) fn new(
         assertion: Assertion<F>,
         inv_g: F::BaseField,
         twiddle_map: &mut BTreeMap<usize, Vec<F::BaseField>>,
-        composition_coefficients: (E, E),
+        composition_coefficient: E,
     ) -> Self {
         // build a polynomial which evaluates to constraint values at asserted steps; for
         // single-value assertions we use the value as constant coefficient of degree 0
@@ -81,7 +86,7 @@ where
             column: assertion.column,
             poly,
             poly_offset,
-            cc: composition_coefficients,
+            cc: composition_coefficient,
         }
     }
 
@@ -107,8 +112,8 @@ where
         self.poly_offset
     }
 
-    /// Returns composition coefficients for this constraint.
-    pub fn cc(&self) -> &(E, E) {
+    /// Returns composition coefficient for this constraint.
+    pub fn cc(&self) -> &E {
         &self.cc
     }
 

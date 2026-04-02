@@ -3,10 +3,13 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
-use super::{FieldElement, Vec};
+use alloc::vec::Vec;
+
+use super::FieldElement;
 
 // EVALUATION FRAME
 // ================================================================================================
+
 /// A set of execution trace rows required for evaluation of transition constraints.
 ///
 /// In the current implementation, an evaluation frame always contains two consecutive rows of the
@@ -27,13 +30,10 @@ impl<E: FieldElement> EvaluationFrame<E> {
     /// # Panics
     /// Panics if `num_columns` is zero.
     pub fn new(num_columns: usize) -> Self {
-        assert!(
-            num_columns > 0,
-            "number of columns must be greater than zero"
-        );
+        assert!(num_columns > 0, "number of columns must be greater than zero");
         EvaluationFrame {
-            current: E::zeroed_vector(num_columns),
-            next: E::zeroed_vector(num_columns),
+            current: vec![E::ZERO; num_columns],
+            next: vec![E::ZERO; num_columns],
         }
     }
 
@@ -45,11 +45,7 @@ impl<E: FieldElement> EvaluationFrame<E> {
     /// * Lengths of the provided rows are not the same.
     pub fn from_rows(current: Vec<E>, next: Vec<E>) -> Self {
         assert!(!current.is_empty(), "a row must contain at least one value");
-        assert_eq!(
-            current.len(),
-            next.len(),
-            "number of values in the rows must be the same"
-        );
+        assert_eq!(current.len(), next.len(), "number of values in the rows must be the same");
         Self { current, next }
     }
 

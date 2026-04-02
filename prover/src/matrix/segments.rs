@@ -3,12 +3,15 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
-use super::ColMatrix;
-use math::{fft::fft_inputs::FftInputs, FieldElement, StarkField};
-use utils::{collections::Vec, group_vector_elements, uninit_vector};
+use alloc::vec::Vec;
+use core::ops::Deref;
 
+use math::{fft::fft_inputs::FftInputs, FieldElement, StarkField};
 #[cfg(feature = "concurrent")]
 use utils::iterators::*;
+use utils::uninit_vector;
+
+use super::ColMatrix;
 
 // CONSTANTS
 // ================================================================================================
@@ -31,10 +34,11 @@ pub struct Segment<B: StarkField, const N: usize> {
 }
 
 impl<B: StarkField, const N: usize> Segment<B, N> {
-    // CONSTRUCTOR
+    // CONSTRUCTORS
     // --------------------------------------------------------------------------------------------
-    /// Instantiates a new [Segment] by evaluating polynomials from the provided [Matrix] starting
-    /// at the specified offset.
+
+    /// Instantiates a new [Segment] by evaluating polynomials from the provided [ColMatrix]
+    /// starting at the specified offset.
     ///
     /// The offset is assumed to be an offset into the view of the matrix where extension field
     /// elements are decomposed into base field elements. This offset must be compatible with the
@@ -54,11 +58,60 @@ impl<B: StarkField, const N: usize> Segment<B, N> {
     {
         let poly_size = polys.num_rows();
         let domain_size = offsets.len();
+        assert!(domain_size.is_power_of_two());
+        assert!(domain_size > poly_size);
+        assert_eq!(poly_size, twiddles.len() * 2);
+        assert!(poly_offset < polys.num_base_cols());
+
+        // allocate memory for the segment
+        let data = if polys.num_base_cols() - poly_offset >= N {
+            // if we will fill the entire segment, we allocate uninitialized memory
+            unsafe { uninit_vector::<[B; N]>(domain_size) }
+        } else {
+            // but if some columns in the segment will remain unfilled, we allocate memory
+            // initialized to zeros to make sure we don't end up with memory with
+            // undefined values
+            vec![[B::ZERO; N]; domain_size]
+        };
+
+        Self::new_with_buffer(data, polys, poly_offset, offsets, twiddles)
+    }
+
+    /// Instantiates a new [Segment] using the provided data buffer by evaluating polynomials in
+    /// the [ColMatrix] starting at the specified offset.
+    ///
+    /// The offset is assumed to be an offset into the view of the matrix where extension field
+    /// elements are decomposed into base field elements. This offset must be compatible with the
+    /// values supplied into [Matrix::get_base_element()] method.
+    ///
+    /// Evaluation is performed over the domain specified by the provided twiddles and offsets.
+    ///
+    /// # Panics
+    /// Panics if:
+    /// - `poly_offset` greater than or equal to the number of base field columns in `polys`.
+    /// - Number of offsets is not a power of two.
+    /// - Number of offsets is smaller than or equal to the polynomial size.
+    /// - The number of twiddles is not half the size of the polynomial size.
+    /// - Number of offsets is smaller than the length of the data buffer
+    pub fn new_with_buffer<E>(
+        data_buffer: Vec<[B; N]>,
+        polys: &ColMatrix<E>,
+        poly_offset: usize,
+        offsets: &[B],
+        twiddles: &[B],
+    ) -> Self
+    where
+        E: FieldElement<BaseField = B>,
+    {
+        let poly_size = polys.num_rows();
+        let domain_size = offsets.len();
+        let mut data = data_buffer;
 
         assert!(domain_size.is_power_of_two());
         assert!(domain_size > poly_size);
         assert_eq!(poly_size, twiddles.len() * 2);
         assert!(poly_offset < polys.num_base_cols());
+        assert_eq!(data.len(), domain_size);
 
         // determine the number of polynomials to add to this segment; this number can be either N,
         // or smaller than N when there are fewer than N polynomials remaining to be processed
@@ -69,24 +122,13 @@ impl<B: StarkField, const N: usize> Segment<B, N> {
             N
         };
 
-        // allocate memory for the segment
-        let mut data = if num_polys == N {
-            // if we will fill the entire segment, we allocate uninitialized memory
-            unsafe { uninit_vector::<[B; N]>(domain_size) }
-        } else {
-            // but if some columns in the segment will remain unfilled, we allocate memory initialized
-            // to zeros to make sure we don't end up with memory with undefined values
-            group_vector_elements(B::zeroed_vector(N * domain_size))
-        };
-
         // evaluate the polynomials either in a single thread or multiple threads, depending
         // on whether `concurrent` feature is enabled and domain size is greater than 1024;
 
         if cfg!(feature = "concurrent") && domain_size >= MIN_CONCURRENT_SIZE {
             #[cfg(feature = "concurrent")]
-            data.par_chunks_mut(poly_size)
-                .zip(offsets.par_chunks(poly_size))
-                .for_each(|(d_chunk, o_chunk)| {
+            data.par_chunks_mut(poly_size).zip(offsets.par_chunks(poly_size)).for_each(
+                |(d_chunk, o_chunk)| {
                     // TODO: investigate multi-threaded copy
                     if num_polys == N {
                         Self::copy_polys(d_chunk, polys, poly_offset, o_chunk);
@@ -94,20 +136,21 @@ impl<B: StarkField, const N: usize> Segment<B, N> {
                         Self::copy_polys_partial(d_chunk, polys, poly_offset, num_polys, o_chunk);
                     }
                     concurrent::split_radix_fft(d_chunk, twiddles);
-                });
+                },
+            );
             #[cfg(feature = "concurrent")]
             concurrent::permute(&mut data);
         } else {
-            data.chunks_mut(poly_size)
-                .zip(offsets.chunks(poly_size))
-                .for_each(|(d_chunk, o_chunk)| {
+            data.chunks_mut(poly_size).zip(offsets.chunks(poly_size)).for_each(
+                |(d_chunk, o_chunk)| {
                     if num_polys == N {
                         Self::copy_polys(d_chunk, polys, poly_offset, o_chunk);
                     } else {
                         Self::copy_polys_partial(d_chunk, polys, poly_offset, num_polys, o_chunk);
                     }
                     d_chunk.fft_in_place(twiddles);
-                });
+                },
+            );
             data.permute();
         }
 
@@ -120,11 +163,6 @@ impl<B: StarkField, const N: usize> Segment<B, N> {
     /// Returns the number of rows in this segment.
     pub fn num_rows(&self) -> usize {
         self.data.len()
-    }
-
-    /// Returns the data in this segment as a slice of arrays.
-    pub fn data(&self) -> &[[B; N]] {
-        &self.data
     }
 
     /// Returns the underlying vector of arrays for this segment.
@@ -172,6 +210,14 @@ impl<B: StarkField, const N: usize> Segment<B, N> {
     }
 }
 
+impl<B: StarkField, const N: usize> Deref for Segment<B, N> {
+    type Target = Vec<[B; N]>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.data
+    }
+}
+
 // CONCURRENT FFT IMPLEMENTATION
 // ================================================================================================
 
@@ -180,12 +226,14 @@ impl<B: StarkField, const N: usize> Segment<B, N> {
 /// with slices of element arrays.
 #[cfg(feature = "concurrent")]
 mod concurrent {
-    use super::{FftInputs, StarkField};
     use math::fft::permute_index;
     use utils::{iterators::*, rayon};
 
+    use super::{FftInputs, StarkField};
+
     /// In-place recursive FFT with permuted output.
     /// Adapted from: https://github.com/0xProject/OpenZKP/tree/master/algebra/primefield/src/fft
+    #[allow(clippy::needless_range_loop)]
     pub fn split_radix_fft<B: StarkField, const N: usize>(data: &mut [[B; N]], twiddles: &[B]) {
         // generator of the domain should be in the middle of twiddles
         let n = data.len();
@@ -203,28 +251,26 @@ mod concurrent {
 
         // apply inner FFTs
         data.par_chunks_mut(outer_len)
-            .for_each(|row| row.fft_in_place_raw(&twiddles, stretch, stretch, 0));
+            .for_each(|row| row.fft_in_place_raw(twiddles, stretch, stretch, 0));
 
         // transpose inner x inner x stretch square matrix
         transpose_square_stretch(data, inner_len, stretch);
 
         // apply outer FFTs
-        data.par_chunks_mut(outer_len)
-            .enumerate()
-            .for_each(|(i, row)| {
-                if i > 0 {
-                    let i = permute_index(inner_len, i);
-                    let inner_twiddle = g.exp_vartime((i as u32).into());
-                    let mut outer_twiddle = inner_twiddle;
-                    for element in row.iter_mut().skip(1) {
-                        for col_idx in 0..N {
-                            element[col_idx] = element[col_idx] * outer_twiddle;
-                        }
-                        outer_twiddle = outer_twiddle * inner_twiddle;
+        data.par_chunks_mut(outer_len).enumerate().for_each(|(i, row)| {
+            if i > 0 {
+                let i = permute_index(inner_len, i);
+                let inner_twiddle = g.exp_vartime((i as u32).into());
+                let mut outer_twiddle = inner_twiddle;
+                for element in row.iter_mut().skip(1) {
+                    for col_idx in 0..N {
+                        element[col_idx] *= outer_twiddle;
                     }
+                    outer_twiddle *= inner_twiddle;
                 }
-                row.fft_in_place(&twiddles)
-            });
+            }
+            row.fft_in_place(twiddles)
+        });
     }
 
     // PERMUTATIONS

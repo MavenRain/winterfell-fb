@@ -3,16 +3,15 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
-use super::{ColMatrix, Trace};
-use air::{EvaluationFrame, TraceInfo, TraceLayout};
-use math::{log2, FieldElement, StarkField};
-use utils::{collections::Vec, uninit_vector};
+use alloc::vec::Vec;
 
-#[cfg(not(feature = "concurrent"))]
-use utils::collections::vec;
-
+use air::{EvaluationFrame, TraceInfo};
+use math::StarkField;
+use utils::uninit_vector;
 #[cfg(feature = "concurrent")]
 use utils::{iterators::*, rayon};
+
+use super::{ColMatrix, Trace};
 
 // CONSTANTS
 // ================================================================================================
@@ -39,8 +38,8 @@ const MIN_FRAGMENT_LENGTH: usize = 2;
 /// with data. To fill the execution trace, you can use the [fill()](TraceTable::fill) method,
 /// which takes two closures as parameters:
 ///
-/// 1. The first closure is responsible for initializing the first state of the computation
-///    (the first row of the execution trace).
+/// 1. The first closure is responsible for initializing the first state of the computation (the
+///    first row of the execution trace).
 /// 2. The second closure receives the previous state of the execution trace as input, and must
 ///    update it to the next state of the computation.
 ///
@@ -59,10 +58,10 @@ const MIN_FRAGMENT_LENGTH: usize = 2;
 /// [fill()](TraceTableFragment::fill) method to fill all fragments with data in parallel.
 /// The semantics of the fragment's [TraceTableFragment::fill()] method are identical to the
 /// semantics of the [TraceTable::fill()] method.
+#[derive(Debug, Clone)]
 pub struct TraceTable<B: StarkField> {
-    layout: TraceLayout,
+    info: TraceInfo,
     trace: ColMatrix<B>,
-    meta: Vec<u8>,
 }
 
 impl<B: StarkField> TraceTable<B> {
@@ -77,8 +76,8 @@ impl<B: StarkField> TraceTable<B> {
     /// # Panics
     /// Panics if:
     /// * `width` is zero or greater than 255.
-    /// * `length` is smaller than 8, greater than biggest multiplicative subgroup in the field
-    ///   `B`, or is not a power of two.
+    /// * `length` is smaller than 8, greater than biggest multiplicative subgroup in the field `B`,
+    ///   or is not a power of two.
     pub fn new(width: usize, length: usize) -> Self {
         Self::with_meta(width, length, vec![])
     }
@@ -92,49 +91,21 @@ impl<B: StarkField> TraceTable<B> {
     /// # Panics
     /// Panics if:
     /// * `width` is zero or greater than 255.
-    /// * `length` is smaller than 8, greater than the biggest multiplicative subgroup in the
-    ///   field `B`, or is not a power of two.
+    /// * `length` is smaller than 8, greater than the biggest multiplicative subgroup in the field
+    ///   `B`, or is not a power of two.
     /// * Length of `meta` is greater than 65535;
     pub fn with_meta(width: usize, length: usize, meta: Vec<u8>) -> Self {
+        let info = TraceInfo::with_meta(width, length, meta);
         assert!(
-            width > 0,
-            "execution trace must consist of at least one column"
-        );
-        assert!(
-            width <= TraceInfo::MAX_TRACE_WIDTH,
-            "execution trace width cannot be greater than {}, but was {}",
-            TraceInfo::MAX_TRACE_WIDTH,
-            width
-        );
-        assert!(
-            length >= TraceInfo::MIN_TRACE_LENGTH,
-            "execution trace must be at least {} steps long, but was {}",
-            TraceInfo::MIN_TRACE_LENGTH,
-            length
-        );
-        assert!(
-            length.is_power_of_two(),
-            "execution trace length must be a power of 2"
-        );
-        assert!(
-            log2(length) <= B::TWO_ADICITY,
+            length.ilog2() <= B::TWO_ADICITY,
             "execution trace length cannot exceed 2^{} steps, but was 2^{}",
             B::TWO_ADICITY,
-            log2(length)
-        );
-        assert!(
-            meta.len() <= TraceInfo::MAX_META_LENGTH,
-            "number of metadata bytes cannot be greater than {}, but was {}",
-            TraceInfo::MAX_META_LENGTH,
-            meta.len()
+            length.ilog2()
         );
 
         let columns = unsafe { (0..width).map(|_| uninit_vector(length)).collect() };
-        Self {
-            layout: TraceLayout::new(width, [0], [0]),
-            trace: ColMatrix::new(columns),
-            meta,
-        }
+
+        Self { info, trace: ColMatrix::new(columns) }
     }
 
     /// Creates a new execution trace from a list of provided trace columns.
@@ -146,46 +117,23 @@ impl<B: StarkField> TraceTable<B> {
     ///   multiplicative subgroup in the field `B`, or is not a power of two.
     /// * Number of elements is not identical for all columns.
     pub fn init(columns: Vec<Vec<B>>) -> Self {
-        assert!(
-            !columns.is_empty(),
-            "execution trace must consist of at least one column"
-        );
-        assert!(
-            columns.len() <= TraceInfo::MAX_TRACE_WIDTH,
-            "execution trace width cannot be greater than {}, but was {}",
-            TraceInfo::MAX_TRACE_WIDTH,
-            columns.len()
-        );
+        assert!(!columns.is_empty(), "execution trace must consist of at least one column");
+
         let trace_length = columns[0].len();
+        let info = TraceInfo::with_meta(columns.len(), trace_length, Vec::new());
+
         assert!(
-            trace_length >= TraceInfo::MIN_TRACE_LENGTH,
-            "execution trace must be at least {} steps long, but was {}",
-            TraceInfo::MIN_TRACE_LENGTH,
-            trace_length
-        );
-        assert!(
-            trace_length.is_power_of_two(),
-            "execution trace length must be a power of 2"
-        );
-        assert!(
-            log2(trace_length) <= B::TWO_ADICITY,
+            trace_length.ilog2() <= B::TWO_ADICITY,
             "execution trace length cannot exceed 2^{} steps, but was 2^{}",
             B::TWO_ADICITY,
-            log2(trace_length)
+            trace_length.ilog2()
         );
+
         for column in columns.iter().skip(1) {
-            assert_eq!(
-                column.len(),
-                trace_length,
-                "all columns traces must have the same length"
-            );
+            assert_eq!(column.len(), trace_length, "all columns traces must have the same length");
         }
 
-        Self {
-            layout: TraceLayout::new(columns.len(), [0], [0]),
-            trace: ColMatrix::new(columns),
-            meta: vec![],
-        }
+        Self { info, trace: ColMatrix::new(columns) }
     }
 
     // DATA MUTATORS
@@ -202,20 +150,6 @@ impl<B: StarkField> TraceTable<B> {
         self.trace.set(column, step, value)
     }
 
-    /// Updates metadata for this execution trace to the specified vector of bytes.
-    ///
-    /// # Panics
-    /// Panics if the length of `meta` is greater than 65535;
-    pub fn set_meta(&mut self, meta: Vec<u8>) {
-        assert!(
-            meta.len() <= TraceInfo::MAX_META_LENGTH,
-            "number of metadata bytes cannot be greater than {}, but was {}",
-            TraceInfo::MAX_META_LENGTH,
-            meta.len()
-        );
-        self.meta = meta
-    }
-
     /// Fill all rows in the execution trace.
     ///
     /// The rows are filled by executing the provided closures as follows:
@@ -225,18 +159,18 @@ impl<B: StarkField> TraceTable<B> {
     /// - `update` closure is used to populate all subsequent rows of the trace; it receives two
     ///   parameters:
     ///   - index of the last updated row (starting with 0).
-    ///   - a mutable reference to the last updated state; the contents of the state are copied
-    ///     into the next row of the trace after the closure returns.
+    ///   - a mutable reference to the last updated state; the contents of the state are copied into
+    ///     the next row of the trace after the closure returns.
     pub fn fill<I, U>(&mut self, init: I, mut update: U)
     where
         I: FnOnce(&mut [B]),
         U: FnMut(usize, &mut [B]),
     {
-        let mut state = vec![B::ZERO; self.main_trace_width()];
+        let mut state = vec![B::ZERO; self.info.main_trace_width()];
         init(&mut state);
         self.update_row(0, &state);
 
-        for i in 0..self.length() - 1 {
+        for i in 0..self.info.length() - 1 {
             update(i, &mut state);
             self.update_row(i + 1, &state);
         }
@@ -259,7 +193,10 @@ impl<B: StarkField> TraceTable<B> {
     /// Panics if `fragment_length` is smaller than 2, greater than the length of the trace,
     /// or is not a power of two.
     #[cfg(not(feature = "concurrent"))]
-    pub fn fragments(&mut self, fragment_length: usize) -> vec::IntoIter<TraceTableFragment<B>> {
+    pub fn fragments(
+        &mut self,
+        fragment_length: usize,
+    ) -> alloc::vec::IntoIter<TraceTableFragment<B>> {
         self.build_fragments(fragment_length).into_iter()
     }
 
@@ -275,28 +212,25 @@ impl<B: StarkField> TraceTable<B> {
     pub fn fragments(
         &mut self,
         fragment_length: usize,
-    ) -> rayon::vec::IntoIter<TraceTableFragment<B>> {
+    ) -> rayon::vec::IntoIter<TraceTableFragment<'_, B>> {
         self.build_fragments(fragment_length).into_par_iter()
     }
 
     /// Returns a vector of trace fragments each covering the number of steps specified by the
     /// `fragment_length` parameter.
-    fn build_fragments(&mut self, fragment_length: usize) -> Vec<TraceTableFragment<B>> {
+    fn build_fragments(&mut self, fragment_length: usize) -> Vec<TraceTableFragment<'_, B>> {
         assert!(
             fragment_length >= MIN_FRAGMENT_LENGTH,
             "fragment length must be at least {MIN_FRAGMENT_LENGTH}, but was {fragment_length}"
         );
         assert!(
-            fragment_length <= self.length(),
+            fragment_length <= self.info.length(),
             "length of a fragment cannot exceed {}, but was {}",
-            self.length(),
+            self.info.length(),
             fragment_length
         );
-        assert!(
-            fragment_length.is_power_of_two(),
-            "fragment length must be a power of 2"
-        );
-        let num_fragments = self.length() / fragment_length;
+        assert!(fragment_length.is_power_of_two(), "fragment length must be a power of 2");
+        let num_fragments = self.info.length() / fragment_length;
 
         let mut fragment_data = (0..num_fragments).map(|_| Vec::new()).collect::<Vec<_>>();
         self.trace.columns_mut().for_each(|column| {
@@ -321,7 +255,7 @@ impl<B: StarkField> TraceTable<B> {
 
     /// Returns the number of columns in this execution trace.
     pub fn width(&self) -> usize {
-        self.main_trace_width()
+        self.info.main_trace_width()
     }
 
     /// Returns the entire trace column at the specified index.
@@ -346,37 +280,18 @@ impl<B: StarkField> TraceTable<B> {
 impl<B: StarkField> Trace for TraceTable<B> {
     type BaseField = B;
 
-    fn layout(&self) -> &TraceLayout {
-        &self.layout
-    }
-
-    fn length(&self) -> usize {
-        self.trace.num_rows()
-    }
-
-    fn meta(&self) -> &[u8] {
-        &self.meta
+    fn info(&self) -> &TraceInfo {
+        &self.info
     }
 
     fn read_main_frame(&self, row_idx: usize, frame: &mut EvaluationFrame<Self::BaseField>) {
-        let next_row_idx = (row_idx + 1) % self.length();
+        let next_row_idx = (row_idx + 1) % self.info.length();
         self.trace.read_row_into(row_idx, frame.current_mut());
         self.trace.read_row_into(next_row_idx, frame.next_mut());
     }
 
     fn main_segment(&self) -> &ColMatrix<B> {
         &self.trace
-    }
-
-    fn build_aux_segment<E>(
-        &mut self,
-        _aux_segments: &[ColMatrix<E>],
-        _rand_elements: &[E],
-    ) -> Option<ColMatrix<E>>
-    where
-        E: FieldElement<BaseField = Self::BaseField>,
-    {
-        None
     }
 }
 
@@ -398,7 +313,7 @@ pub struct TraceTableFragment<'a, B: StarkField> {
     data: Vec<&'a mut [B]>,
 }
 
-impl<'a, B: StarkField> TraceTableFragment<'a, B> {
+impl<B: StarkField> TraceTableFragment<'_, B> {
     // PUBLIC ACCESSORS
     // --------------------------------------------------------------------------------------------
 
@@ -429,14 +344,14 @@ impl<'a, B: StarkField> TraceTableFragment<'a, B> {
     /// Fills all rows in the fragment.
     ///
     /// The rows are filled by executing the provided closures as follows:
-    /// - `init` closure is used to initialize the first row of the fragment; it receives a
-    ///   mutable reference to the first state initialized to all zeros. Contents of the state are
-    ///   copied into the first row of the fragment after the closure returns.
+    /// - `init` closure is used to initialize the first row of the fragment; it receives a mutable
+    ///   reference to the first state initialized to all zeros. Contents of the state are copied
+    ///   into the first row of the fragment after the closure returns.
     /// - `update` closure is used to populate all subsequent rows of the fragment; it receives two
     ///   parameters:
     ///   - index of the last updated row (starting with 0).
-    ///   - a mutable reference to the last updated state; the contents of the state are copied
-    ///     into the next row of the fragment after the closure returns.
+    ///   - a mutable reference to the last updated state; the contents of the state are copied into
+    ///     the next row of the fragment after the closure returns.
     pub fn fill<I, T>(&mut self, init_state: I, mut update_state: T)
     where
         I: FnOnce(&mut [B]),

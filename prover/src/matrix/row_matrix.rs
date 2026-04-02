@@ -3,15 +3,17 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
-use super::{ColMatrix, Segment};
-use crate::StarkDomain;
-use crypto::{ElementHasher, MerkleTree};
-use math::{fft, log2, FieldElement, StarkField};
-use utils::collections::Vec;
-use utils::{batch_iter_mut, flatten_vector_elements, uninit_vector};
+use alloc::vec::Vec;
 
+use air::PartitionOptions;
+use crypto::{ElementHasher, VectorCommitment};
+use math::{fft, FieldElement, StarkField};
 #[cfg(feature = "concurrent")]
 use utils::iterators::*;
+use utils::{batch_iter_mut, flatten_vector_elements, uninit_vector};
+
+use super::{ColMatrix, Segment};
+use crate::StarkDomain;
 
 // ROW-MAJOR MATRIX
 // ================================================================================================
@@ -57,7 +59,8 @@ impl<E: FieldElement> RowMatrix<E> {
 
         // pre-compute offsets for each row
         let poly_size = polys.num_rows();
-        let offsets = get_offsets::<E>(poly_size, blowup_factor, E::BaseField::GENERATOR);
+        let offsets =
+            get_evaluation_offsets::<E>(poly_size, blowup_factor, E::BaseField::GENERATOR);
 
         // compute twiddles for polynomial evaluation
         let twiddles = fft::get_twiddles::<E::BaseField>(polys.num_rows());
@@ -86,7 +89,8 @@ impl<E: FieldElement> RowMatrix<E> {
 
         // pre-compute offsets for each row
         let poly_size = polys.num_rows();
-        let offsets = get_offsets::<E>(poly_size, domain.trace_to_lde_blowup(), domain.offset());
+        let offsets =
+            get_evaluation_offsets::<E>(poly_size, domain.trace_to_lde_blowup(), domain.offset());
 
         // build matrix segments by evaluating all polynomials
         let segments = build_segments::<E, N>(polys, domain.trace_twiddles(), &offsets);
@@ -103,8 +107,8 @@ impl<E: FieldElement> RowMatrix<E> {
     /// # Panics
     /// Panics if
     /// - `segments` is an empty vector.
-    /// - `elements_per_row` is greater than the row width implied by the number of segments and
-    ///   `N` type parameter.
+    /// - `elements_per_row` is greater than the row width implied by the number of segments and `N`
+    ///   type parameter.
     pub fn from_segments<const N: usize>(
         segments: Vec<Segment<E::BaseField, N>>,
         elements_per_row: usize,
@@ -172,31 +176,55 @@ impl<E: FieldElement> RowMatrix<E> {
     /// Returns a commitment to this matrix.
     ///
     /// The commitment is built as follows:
-    /// * Each row of the matrix is hashed into a single digest of the specified hash function.
-    /// * The resulting values are used to build a binary Merkle tree such that each row digest
-    ///   becomes a leaf in the tree. Thus, the number of leaves in the tree is equal to the
-    ///   number of rows in the matrix.
-    /// * The resulting Merkle tree is returned as the commitment to the entire matrix.
-    pub fn commit_to_rows<H>(&self) -> MerkleTree<H>
+    /// * Each row of the matrix is hashed into a single digest of the specified hash function. The
+    ///   result is a vector of digests of length equal to the number of matrix rows.
+    /// * A vector commitment is computed for the resulting vector using the specified vector
+    ///   commitment scheme.
+    /// * The resulting vector commitment is returned as the commitment to the entire matrix.
+    pub fn commit_to_rows<H, V>(&self, partition_options: PartitionOptions) -> V
     where
         H: ElementHasher<BaseField = E::BaseField>,
+        V: VectorCommitment<H>,
     {
         // allocate vector to store row hashes
         let mut row_hashes = unsafe { uninit_vector::<H::Digest>(self.num_rows()) };
+        let partition_size = partition_options.partition_size::<E>(self.num_cols());
 
-        // iterate though matrix rows, hashing each row
-        batch_iter_mut!(
-            &mut row_hashes,
-            128, // min batch size
-            |batch: &mut [H::Digest], batch_offset: usize| {
-                for (i, row_hash) in batch.iter_mut().enumerate() {
-                    *row_hash = H::hash_elements(self.row(batch_offset + i));
+        if partition_size == self.num_cols() {
+            // iterate though matrix rows, hashing each row
+            batch_iter_mut!(
+                &mut row_hashes,
+                128, // min batch size
+                |batch: &mut [H::Digest], batch_offset: usize| {
+                    for (i, row_hash) in batch.iter_mut().enumerate() {
+                        *row_hash = H::hash_elements(self.row(batch_offset + i));
+                    }
                 }
-            }
-        );
+            );
+        } else {
+            let num_partitions = partition_options.num_partitions::<E>(self.num_cols());
 
-        // build Merkle tree out of hashed rows
-        MerkleTree::new(row_hashes).expect("failed to construct trace Merkle tree")
+            // iterate though matrix rows, hashing each row
+            batch_iter_mut!(
+                &mut row_hashes,
+                128, // min batch size
+                |batch: &mut [H::Digest], batch_offset: usize| {
+                    let mut buffer = vec![H::Digest::default(); num_partitions];
+                    for (i, row_hash) in batch.iter_mut().enumerate() {
+                        self.row(batch_offset + i)
+                            .chunks(partition_size)
+                            .zip(buffer.iter_mut())
+                            .for_each(|(chunk, buf)| {
+                                *buf = H::hash_elements(chunk);
+                            });
+                        *row_hash = H::merge_many(&buffer);
+                    }
+                }
+            );
+        }
+
+        // build the vector commitment to the hashed rows
+        V::new(row_hashes).expect("failed to construct trace vector commitment")
     }
 }
 
@@ -207,13 +235,13 @@ impl<E: FieldElement> RowMatrix<E> {
 /// factor and domain offset.
 ///
 /// When `concurrent` feature is enabled, offsets are computed in multiple threads.
-fn get_offsets<E: FieldElement>(
+pub fn get_evaluation_offsets<E: FieldElement>(
     poly_size: usize,
     blowup_factor: usize,
     domain_offset: E::BaseField,
 ) -> Vec<E::BaseField> {
     let domain_size = poly_size * blowup_factor;
-    let g = E::BaseField::get_root_of_unity(log2(domain_size));
+    let g = E::BaseField::get_root_of_unity(domain_size.ilog2());
 
     // allocate memory to hold the offsets
     let mut offsets = unsafe { uninit_vector(domain_size) };
@@ -234,23 +262,17 @@ fn get_offsets<E: FieldElement>(
     // compute offsets for each chunk using either parallel or regular iterators
 
     #[cfg(not(feature = "concurrent"))]
-    offsets
-        .chunks_mut(poly_size)
-        .enumerate()
-        .for_each(compute_offsets);
+    offsets.chunks_mut(poly_size).enumerate().for_each(compute_offsets);
 
     #[cfg(feature = "concurrent")]
-    offsets
-        .par_chunks_mut(poly_size)
-        .enumerate()
-        .for_each(compute_offsets);
+    offsets.par_chunks_mut(poly_size).enumerate().for_each(compute_offsets);
 
     offsets
 }
 
 /// Returns matrix segments constructed by evaluating polynomials in the specified matrix over the
 /// domain defined by twiddles and offsets.
-fn build_segments<E: FieldElement, const N: usize>(
+pub fn build_segments<E: FieldElement, const N: usize>(
     polys: &ColMatrix<E>,
     twiddles: &[E::BaseField],
     offsets: &[E::BaseField],
@@ -259,7 +281,7 @@ fn build_segments<E: FieldElement, const N: usize>(
     debug_assert_eq!(polys.num_rows(), twiddles.len() * 2);
     debug_assert_eq!(offsets.len() % polys.num_rows(), 0);
 
-    let num_segments = if polys.num_base_cols() % N == 0 {
+    let num_segments = if polys.num_base_cols().is_multiple_of(N) {
         polys.num_base_cols() / N
     } else {
         polys.num_base_cols() / N + 1
@@ -299,7 +321,7 @@ fn transpose<B: StarkField, const N: usize>(mut segments: Vec<Segment<B, N>>) ->
         for i in 0..rows_per_batch {
             let row_idx = i + row_offset;
             for j in 0..num_segs {
-                let v = &segments[j].data()[row_idx];
+                let v = &segments[j][row_idx];
                 batch[i * num_segs + j].copy_from_slice(v);
             }
         }

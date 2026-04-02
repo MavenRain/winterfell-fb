@@ -3,15 +3,14 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
-use super::{
-    AsBytes, BaseElement, ByteReader, Deserializable, DeserializationError, FieldElement,
-    StarkField, Vec, M,
-};
-use crate::field::{ExtensionOf, QuadExtension};
-use core::convert::TryFrom;
+use alloc::vec::Vec;
+
 use num_bigint::BigUint;
 use rand_utils::{rand_value, rand_vector};
 use utils::SliceReader;
+
+use super::{AsBytes, BaseElement, ByteReader, DeserializationError, FieldElement, StarkField, M};
+use crate::field::{ExtensionOf, QuadExtension};
 
 // BASIC ALGEBRA
 // ================================================================================================
@@ -23,13 +22,10 @@ fn add() {
     assert_eq!(r, r + BaseElement::ZERO);
 
     // test addition within bounds
-    assert_eq!(
-        BaseElement::from(5u8),
-        BaseElement::from(2u8) + BaseElement::from(3u8)
-    );
+    assert_eq!(BaseElement::from(5u8), BaseElement::from(2u8) + BaseElement::from(3u8));
 
     // test overflow
-    let t = BaseElement::from(BaseElement::MODULUS - 1);
+    let t = BaseElement::new(BaseElement::MODULUS - 1);
     assert_eq!(BaseElement::ZERO, t + BaseElement::ONE);
     assert_eq!(BaseElement::ONE, t + BaseElement::from(2u8));
 
@@ -49,13 +45,10 @@ fn sub() {
     assert_eq!(r, r - BaseElement::ZERO);
 
     // test subtraction within bounds
-    assert_eq!(
-        BaseElement::from(2u8),
-        BaseElement::from(5u8) - BaseElement::from(3u8)
-    );
+    assert_eq!(BaseElement::from(2u8), BaseElement::from(5u8) - BaseElement::from(3u8));
 
     // test underflow
-    let expected = BaseElement::from(BaseElement::MODULUS - 2);
+    let expected = BaseElement::new(BaseElement::MODULUS - 2);
     assert_eq!(expected, BaseElement::from(3u8) - BaseElement::from(5u8));
 }
 
@@ -67,23 +60,18 @@ fn mul() {
     assert_eq!(r, r * BaseElement::ONE);
 
     // test multiplication within bounds
-    assert_eq!(
-        BaseElement::from(15u8),
-        BaseElement::from(5u8) * BaseElement::from(3u8)
-    );
+    assert_eq!(BaseElement::from(15u8), BaseElement::from(5u8) * BaseElement::from(3u8));
 
     // test overflow
     let m = BaseElement::MODULUS;
-    let t = BaseElement::from(m - 1);
+    let t = BaseElement::new(m - 1);
     assert_eq!(BaseElement::ONE, t * t);
-    assert_eq!(BaseElement::from(m - 2), t * BaseElement::from(2u8));
-    assert_eq!(BaseElement::from(m - 4), t * BaseElement::from(4u8));
+    assert_eq!(BaseElement::new(m - 2), t * BaseElement::from(2u8));
+    assert_eq!(BaseElement::new(m - 4), t * BaseElement::from(4u8));
 
+    #[allow(clippy::manual_div_ceil)]
     let t = (m + 1) / 2;
-    assert_eq!(
-        BaseElement::ONE,
-        BaseElement::from(t) * BaseElement::from(2u8)
-    );
+    assert_eq!(BaseElement::ONE, BaseElement::new(t) * BaseElement::from(2u8));
 
     // test random values
     let v1: Vec<BaseElement> = rand_vector(1000);
@@ -128,10 +116,7 @@ fn conjugate() {
 #[test]
 fn get_root_of_unity() {
     let root_40 = BaseElement::get_root_of_unity(40);
-    assert_eq!(
-        BaseElement::from(23953097886125630542083529559205016746u128),
-        root_40
-    );
+    assert_eq!(BaseElement::new(23953097886125630542083529559205016746u128), root_40);
     assert_eq!(BaseElement::ONE, root_40.exp(u128::pow(2, 40)));
 
     let root_39 = BaseElement::get_root_of_unity(39);
@@ -222,36 +207,24 @@ fn read_elements_from() {
 
     // fill whole target
     let mut reader = SliceReader::new(&bytes[..64]);
-    let result = BaseElement::read_batch_from(&mut reader, 4);
+    let result = reader.read_many(4);
     assert!(result.is_ok());
     assert_eq!(expected, result.unwrap());
     assert!(!reader.has_more_bytes());
 
     // partial number of elements
     let mut reader = SliceReader::new(&bytes[..65]);
-    let result = BaseElement::read_batch_from(&mut reader, 4);
+    let result = reader.read_many(4);
     assert!(result.is_ok());
     assert_eq!(expected, result.unwrap());
     assert!(reader.has_more_bytes());
 
     // invalid element
     let mut reader = SliceReader::new(&bytes[16..]);
-    let result = BaseElement::read_batch_from(&mut reader, 4);
+    let result = reader.read_many::<BaseElement>(4);
     assert!(result.is_err());
     if let Err(err) = result {
         assert!(matches!(err, DeserializationError::InvalidValue(_)));
-    }
-}
-
-// INITIALIZATION
-// ================================================================================================
-
-#[test]
-fn zeroed_vector() {
-    let result = BaseElement::zeroed_vector(4);
-    assert_eq!(4, result.len());
-    for element in result.into_iter() {
-        assert_eq!(BaseElement::ZERO, element);
     }
 }
 
@@ -266,7 +239,8 @@ impl BaseElement {
     pub fn from_big_uint(value: BigUint) -> Self {
         let bytes = value.to_bytes_le();
         let mut buffer = [0u8; 16];
-        buffer[0..bytes.len()].copy_from_slice(&bytes);
-        BaseElement::try_from(buffer).unwrap()
+        buffer[..bytes.len()].copy_from_slice(&bytes);
+        let value = u128::from_le_bytes(buffer);
+        BaseElement::new(value)
     }
 }

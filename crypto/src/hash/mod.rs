@@ -4,6 +4,7 @@
 // LICENSE file in the root directory of this source tree.
 
 use core::{fmt::Debug, slice};
+
 use math::{FieldElement, StarkField};
 use utils::{ByteReader, Deserializable, DeserializationError, Serializable};
 
@@ -17,9 +18,6 @@ mod mds;
 
 mod rescue;
 pub use rescue::{Rp62_248, Rp64_256, RpJive64_256};
-
-mod griffin;
-pub use griffin::GriffinJive64_256;
 
 // HASHER TRAITS
 // ================================================================================================
@@ -43,6 +41,9 @@ pub trait Hasher {
     /// Returns a hash of two digests. This method is intended for use in construction of
     /// Merkle trees.
     fn merge(values: &[Self::Digest; 2]) -> Self::Digest;
+
+    /// Returns a hash of many digests.
+    fn merge_many(values: &[Self::Digest]) -> Self::Digest;
 
     /// Returns hash(`seed` || `value`). This method is intended for use in PRNG and PoW contexts.
     fn merge_with_int(seed: Self::Digest, value: u64) -> Self::Digest;

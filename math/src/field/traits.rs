@@ -3,17 +3,16 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
+use alloc::vec::Vec;
 use core::{
-    convert::TryFrom,
     fmt::{Debug, Display},
     ops::{
         Add, AddAssign, BitAnd, Div, DivAssign, Mul, MulAssign, Neg, Shl, Shr, ShrAssign, Sub,
         SubAssign,
     },
 };
-use utils::{
-    collections::Vec, AsBytes, Deserializable, DeserializationError, Randomizable, Serializable,
-};
+
+use utils::{AsBytes, Deserializable, DeserializationError, Randomizable, Serializable};
 
 // FIELD ELEMENT
 // ================================================================================================
@@ -46,11 +45,11 @@ pub trait FieldElement:
     + MulAssign<Self>
     + DivAssign<Self>
     + Neg<Output = Self>
-    + From<u128>
-    + From<u64>
     + From<u32>
     + From<u16>
     + From<u8>
+    + TryFrom<u64>
+    + TryFrom<u128>
     + for<'a> TryFrom<&'a [u8]>
     + ExtensionOf<<Self as FieldElement>::BaseField>
     + AsBytes
@@ -209,16 +208,6 @@ pub trait FieldElement:
     /// This function is unsafe because it does not check whether underlying bytes represent valid
     /// field elements according to their internal representation.
     unsafe fn bytes_as_elements(bytes: &[u8]) -> Result<&[Self], DeserializationError>;
-
-    // UTILITIES
-    // --------------------------------------------------------------------------------------------
-
-    /// Returns a vector of length `n` initialized with all ZERO elements.
-    ///
-    /// Specialized implementations of this function may be faster than the generic implementation.
-    fn zeroed_vector(n: usize) -> Vec<Self> {
-        vec![Self::ZERO; n]
-    }
 }
 
 // STARK FIELD
@@ -230,6 +219,9 @@ pub trait FieldElement:
 /// the modulus of the field should be a prime number of the form `k` * 2^`n` + 1 (a Proth prime),
 /// where `n` is relatively large (e.g., greater than 32).
 pub trait StarkField: FieldElement<BaseField = Self> {
+    // CONSTANTS
+    //----------------------------------------------------------------------------------------------
+
     /// Prime modulus of the field. Must be of the form `k` * 2^`n` + 1 (a Proth prime).
     /// This ensures that the field has high 2-adicity.
     const MODULUS: Self::PositiveInteger;
@@ -247,26 +239,49 @@ pub trait StarkField: FieldElement<BaseField = Self> {
     /// computed as Self::GENERATOR^`k`.
     const TWO_ADIC_ROOT_OF_UNITY: Self;
 
-    /// Returns the root of unity of order 2^`n`.
-    ///
-    /// # Panics
-    /// Panics if the root of unity for the specified order does not exist in this field.
-    fn get_root_of_unity(n: u32) -> Self {
-        assert!(n != 0, "cannot get root of unity for n = 0");
-        assert!(
-            n <= Self::TWO_ADICITY,
-            "order cannot exceed 2^{}",
-            Self::TWO_ADICITY
-        );
-        let power = Self::PositiveInteger::from(1u32) << (Self::TWO_ADICITY - n);
-        Self::TWO_ADIC_ROOT_OF_UNITY.exp(power)
-    }
+    // REQUIRED METHODS
+    //----------------------------------------------------------------------------------------------
 
     /// Returns byte representation of the field modulus in little-endian byte order.
     fn get_modulus_le_bytes() -> Vec<u8>;
 
     /// Returns a canonical integer representation of this field element.
     fn as_int(&self) -> Self::PositiveInteger;
+
+    // PROVIDED METHODS
+    //----------------------------------------------------------------------------------------------
+
+    /// Returns the root of unity of order 2^`n`.
+    ///
+    /// # Panics
+    /// Panics if the root of unity for the specified order does not exist in this field.
+    fn get_root_of_unity(n: u32) -> Self {
+        assert!(n != 0, "cannot get root of unity for n = 0");
+        assert!(n <= Self::TWO_ADICITY, "order cannot exceed 2^{}", Self::TWO_ADICITY);
+        let power = Self::PositiveInteger::from(1u32) << (Self::TWO_ADICITY - n);
+        Self::TWO_ADIC_ROOT_OF_UNITY.exp(power)
+    }
+
+    /// Converts a slice of bytes into a field element. Pads the slice if it is smaller than the
+    /// number of bytes needed to represent an element.
+    ///
+    /// # Panics
+    /// Panics if
+    /// - the length of `bytes` is greater than the number of bytes needed to encode an element.
+    /// - the value of the bytes is not a valid field element after padding
+    fn from_bytes_with_padding(bytes: &[u8]) -> Self {
+        assert!(bytes.len() < Self::ELEMENT_BYTES);
+
+        let mut buf = bytes.to_vec();
+        buf.resize(Self::ELEMENT_BYTES, 0);
+
+        let element = match Self::try_from(buf.as_slice()) {
+            Ok(element) => element,
+            Err(_) => panic!("element deserialization failed"),
+        };
+
+        element
+    }
 }
 
 // EXTENSIBLE FIELD
@@ -309,9 +324,9 @@ pub trait ExtensibleField<const N: usize>: StarkField {
 ///
 /// Currently, this implies the following:
 /// - An element in the base field can be converted into an element in the extension field.
-/// - An element in the extension field can be multiplied by a base field element directly. This
-///   can be used for optimization purposes as such multiplication could be much more efficient
-///   than multiplication of two extension field elements.
+/// - An element in the extension field can be multiplied by a base field element directly. This can
+///   be used for optimization purposes as such multiplication could be much more efficient than
+///   multiplication of two extension field elements.
 pub trait ExtensionOf<E: FieldElement>: From<E> {
     fn mul_base(self, other: E) -> Self;
 }

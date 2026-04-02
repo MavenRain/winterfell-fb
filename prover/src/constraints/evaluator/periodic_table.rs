@@ -3,12 +3,11 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
+use alloc::{collections::BTreeMap, vec::Vec};
+
 use air::Air;
 use math::{fft, StarkField};
-use utils::{
-    collections::{BTreeMap, Vec},
-    uninit_vector,
-};
+use utils::uninit_vector;
 
 pub struct PeriodicValueTable<B: StarkField> {
     values: Vec<B>,
@@ -27,11 +26,7 @@ impl<B: StarkField> PeriodicValueTable<B> {
         // periodic columns return an empty table
         let polys = air.get_periodic_column_polys();
         if polys.is_empty() {
-            return PeriodicValueTable {
-                values: Vec::new(),
-                length: 0,
-                width: 0,
-            };
+            return PeriodicValueTable { values: Vec::new(), length: 0, width: 0 };
         }
 
         // determine the size of the biggest polynomial in the set. unwrap is OK here
@@ -48,9 +43,8 @@ impl<B: StarkField> PeriodicValueTable<B> {
                 let poly_size = poly.len();
                 let num_cycles = (air.trace_length() / poly_size) as u64;
                 let offset = air.domain_offset().exp(num_cycles.into());
-                let twiddles = twiddle_map
-                    .entry(poly_size)
-                    .or_insert_with(|| fft::get_twiddles(poly_size));
+                let twiddles =
+                    twiddle_map.entry(poly_size).or_insert_with(|| fft::get_twiddles(poly_size));
 
                 fft::evaluate_poly_with_offset(poly, twiddles, offset, air.ce_blowup_factor())
             })
@@ -96,27 +90,22 @@ impl<B: StarkField> PeriodicValueTable<B> {
 
 #[cfg(test)]
 mod tests {
-    use crate::tests::MockAir;
+    use alloc::vec::Vec;
+
     use air::Air;
     use math::{
-        fields::f128::BaseElement, get_power_series_with_offset, log2, polynom, FieldElement,
-        StarkField,
+        fields::f128::BaseElement, get_power_series_with_offset, polynom, FieldElement, StarkField,
     };
-    use utils::collections::Vec;
+
+    use crate::tests::MockAir;
 
     #[test]
     fn periodic_value_table() {
         let trace_length = 32;
 
         // instantiate AIR with 2 periodic columns
-        let col1 = vec![1u128, 2]
-            .into_iter()
-            .map(BaseElement::new)
-            .collect::<Vec<_>>();
-        let col2 = vec![3u128, 4, 5, 6]
-            .into_iter()
-            .map(BaseElement::new)
-            .collect::<Vec<_>>();
+        let col1 = vec![1u128, 2].into_iter().map(BaseElement::new).collect::<Vec<_>>();
+        let col2 = vec![3u128, 4, 5, 6].into_iter().map(BaseElement::new).collect::<Vec<_>>();
         let air = MockAir::with_periodic_columns(vec![col1, col2], trace_length);
 
         // build a table of periodic values
@@ -155,7 +144,7 @@ mod tests {
     }
 
     fn build_ce_domain(domain_size: usize, domain_offset: BaseElement) -> Vec<BaseElement> {
-        let g = BaseElement::get_root_of_unity(log2(domain_size));
+        let g = BaseElement::get_root_of_unity(domain_size.ilog2());
         get_power_series_with_offset(g, domain_offset, domain_size)
     }
 }

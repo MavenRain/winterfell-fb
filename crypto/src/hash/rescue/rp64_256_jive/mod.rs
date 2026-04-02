@@ -3,11 +3,11 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
-use super::super::mds::mds_f64_8x8::mds_multiply;
-use super::{exp_acc, Digest, ElementHasher, Hasher};
-use core::convert::TryInto;
 use core::ops::Range;
+
 use math::{fields::f64::BaseElement, FieldElement, StarkField};
+
+use super::{super::mds::mds_f64_8x8::mds_multiply, exp_acc, Digest, ElementHasher, Hasher};
 
 mod digest;
 pub use digest::ElementDigest;
@@ -62,29 +62,29 @@ const INV_ALPHA: u64 = 10540996611094048183;
 /// The hash function is implemented according to the Rescue Prime
 /// [specifications](https://eprint.iacr.org/2020/1143.pdf) with the following exception:
 /// * We set the number of rounds to 7, which implies a 40% security margin instead of the 50%
-///   margin used in the specifications (a 50% margin rounds up to 8 rounds). The primary
-///   motivation for this is that having the number of rounds be one less than a power of two
-///   simplifies AIR design for computations involving the hash function.
-/// * When hashing a sequence of elements, implement the Hirose padding rule. However, it also
-///   means that our instantiation of Rescue Prime cannot be used in a stream mode as the number
-///   of elements to be hashed must be known upfront.
+///   margin used in the specifications (a 50% margin rounds up to 8 rounds). The primary motivation
+///   for this is that having the number of rounds be one less than a power of two simplifies AIR
+///   design for computations involving the hash function.
+/// * When hashing a sequence of elements, implement the Hirose padding rule. However, it also means
+///   that our instantiation of Rescue Prime cannot be used in a stream mode as the number of
+///   elements to be hashed must be known upfront.
 /// * We use the first 4 elements of the state (rather than the last 4 elements of the state) for
-///   capacity and the remaining 8 elements for rate. The output of the hash function comes from
-///   the first four elements of the rate portion of the state (elements 4, 5, 6, and 7). This
+///   capacity and the remaining 8 elements for rate. The output of the hash function comes from the
+///   first four elements of the rate portion of the state (elements 4, 5, 6, and 7). This
 ///   effectively applies a fixed bit permutation before and after XLIX permutation. We assert
 ///   without proof that this does not affect security of the construction.
 /// * Instead of using Vandermonde matrices as a standard way of generating an MDS matrix as
-///   described in Rescue Prime paper, we use a methodology developed by Polygon Zero to find an
-///   MDS matrix with coefficients which are small powers of two in frequency domain. This allows
-///   us to dramatically reduce MDS matrix multiplication time. Using a different MDS matrix does
-///   not affect security of the hash function as any MDS matrix satisfies Rescue Prime
-///   construction (as described in section 4.2 of the paper).
+///   described in Rescue Prime paper, we use a methodology developed by Polygon Zero to find an MDS
+///   matrix with coefficients which are small powers of two in frequency domain. This allows us to
+///   dramatically reduce MDS matrix multiplication time. Using a different MDS matrix does not
+///   affect security of the hash function as any MDS matrix satisfies Rescue Prime construction (as
+///   described in section 4.2 of the paper).
 ///
 /// The parameters used to instantiate the function are:
 /// * Field: 64-bit prime field with modulus 2^64 - 2^32 + 1.
 /// * State width: 8 field elements.
 /// * Capacity size: 4 field elements.
-/// * Number of founds: 7.
+/// * Number of rounds: 7.
 /// * S-Box degree: 7.
 ///
 /// The above parameters target 128-bit security level. The digest consists of four field elements
@@ -96,12 +96,12 @@ const INV_ALPHA: u64 = 10540996611094048183;
 /// is instantiated with a sponge construction, while the latter use the Jive compression mode and
 /// hence do not rely on the sponge construction.
 ///
-/// In addition, [hash()](RpJive64_256::hash) function is not consistent with the functions mentioned
-/// above. For example, if we take two field elements, serialize them to bytes and hash them using
-/// [hash()](RpJive64_256::hash), the result will differ from the result obtained by hashing these
-/// elements directly using [hash_elements()](RpJive64_256::hash_elements) function. The reason for
-/// this difference is that [hash()](RpJive64_256::hash) function needs to be able to handle
-/// arbitrary binary strings, which may or may not encode valid field elements - and thus,
+/// In addition, [hash()](RpJive64_256::hash) function is not consistent with the functions
+/// mentioned above. For example, if we take two field elements, serialize them to bytes and hash
+/// them using [hash()](RpJive64_256::hash), the result will differ from the result obtained by
+/// hashing these elements directly using [hash_elements()](RpJive64_256::hash_elements) function.
+/// The reason for this difference is that [hash()](RpJive64_256::hash) function needs to be able to
+/// handle arbitrary binary strings, which may or may not encode valid field elements - and thus,
 /// deserialization procedure used by this function is different from the procedure used to
 /// deserialize valid field elements.
 ///
@@ -120,7 +120,7 @@ impl Hasher for RpJive64_256 {
         // compute the number of elements required to represent the string; we will be processing
         // the string in 7-byte chunks, thus the number of elements will be equal to the number
         // of such chunks (including a potential partial chunk at the end).
-        let num_elements = if bytes.len() % 7 == 0 {
+        let num_elements = if bytes.len().is_multiple_of(7) {
             bytes.len() / 7
         } else {
             bytes.len() / 7 + 1
@@ -129,7 +129,7 @@ impl Hasher for RpJive64_256 {
         // initialize state to all zeros, except for the first element of the capacity part, which
         // is set to 1 if the number of elements is not a multiple of RATE_WIDTH.
         let mut state = [BaseElement::ZERO; STATE_WIDTH];
-        if num_elements % RATE_WIDTH != 0 {
+        if !num_elements.is_multiple_of(RATE_WIDTH) {
             state[CAPACITY_RANGE.start] = BaseElement::ONE;
         }
 
@@ -153,11 +153,11 @@ impl Hasher for RpJive64_256 {
             }
 
             // convert the bytes into a field element and absorb it into the rate portion of the
-            // state; if the rate is filled up, apply the Griffin permutation and start absorbing
-            // again from zero index.
+            // state; if the rate is filled up, apply the Rescue-Prime permutation and start
+            // absorbing again from zero index.
             state[RATE_RANGE.start + i] += BaseElement::new(u64::from_le_bytes(buf));
             i += 1;
-            if i % RATE_WIDTH == 0 {
+            if i.is_multiple_of(RATE_WIDTH) {
                 Self::apply_permutation(&mut state);
                 i = 0;
             }
@@ -185,9 +185,8 @@ impl Hasher for RpJive64_256 {
     // the Jive compression mode designed in https://eprint.iacr.org/2022/840.pdf.
     fn merge(values: &[Self::Digest; 2]) -> Self::Digest {
         // initialize the state by copying the digest elements into the state
-        let initial_state: [BaseElement; STATE_WIDTH] = Self::Digest::digests_as_elements(values)
-            .try_into()
-            .unwrap();
+        let initial_state: [BaseElement; STATE_WIDTH] =
+            Self::Digest::digests_as_elements(values).try_into().unwrap();
         let mut state = initial_state;
 
         // apply the Rescue permutation and apply the final Jive summation
@@ -196,16 +195,19 @@ impl Hasher for RpJive64_256 {
         Self::apply_jive_summation(&initial_state, &state)
     }
 
+    fn merge_many(values: &[Self::Digest]) -> Self::Digest {
+        Self::hash_elements(ElementDigest::digests_as_elements(values))
+    }
+
     // We do not rely on the sponge construction to build our compression function. Instead, we use
     // the Jive compression mode designed in https://eprint.iacr.org/2022/840.pdf.
     fn merge_with_int(seed: Self::Digest, value: u64) -> Self::Digest {
         // initialize the state as follows:
         // - seed is copied into the first 4 elements of the state.
-        // - if the value fits into a single field element, copy it into the fifth rate element
-        //   and set the last state element to 5 (the number of elements to be hashed).
-        // - if the value doesn't fit into a single field element, split it into two field
-        //   elements, copy them into state elements 5 and 6, and set the last state element
-        //   to 6.
+        // - if the value fits into a single field element, copy it into the fifth rate element and
+        //   set the last state element to 5 (the number of elements to be hashed).
+        // - if the value doesn't fit into a single field element, split it into two field elements,
+        //   copy them into state elements 5 and 6, and set the last state element to 6.
         let mut state = [BaseElement::ZERO; STATE_WIDTH];
         state[INPUT1_RANGE].copy_from_slice(seed.as_elements());
         state[INPUT2_RANGE.start] = BaseElement::new(value);
@@ -234,18 +236,18 @@ impl ElementHasher for RpJive64_256 {
         // initialize state to all zeros, except for the first element of the capacity part, which
         // is set to 1 if the number of elements is not a multiple of RATE_WIDTH.
         let mut state = [BaseElement::ZERO; STATE_WIDTH];
-        if elements.len() % RATE_WIDTH != 0 {
+        if !elements.len().is_multiple_of(RATE_WIDTH) {
             state[CAPACITY_RANGE.start] = BaseElement::ONE;
         }
 
         // absorb elements into the state one by one until the rate portion of the state is filled
-        // up; then apply the Griffin permutation and start absorbing again; repeat until all
+        // up; then apply the Rescue-Prime permutation and start absorbing again; repeat until all
         // elements have been absorbed
         let mut i = 0;
         for &element in elements.iter() {
             state[RATE_RANGE.start + i] += element;
             i += 1;
-            if i % RATE_WIDTH == 0 {
+            if i.is_multiple_of(RATE_WIDTH) {
                 Self::apply_permutation(&mut state);
                 i = 0;
             }

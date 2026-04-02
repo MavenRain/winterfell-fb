@@ -5,27 +5,36 @@
 
 //! An implementation of a 64-bit STARK-friendly prime field with modulus $2^{64} - 2^{32} + 1$
 //! using Montgomery representation.
+//!
 //! Our implementation follows <https://eprint.iacr.org/2022/274.pdf> and is constant-time.
 //!
 //! This field supports very fast modular arithmetic and has a number of other attractive
 //! properties, including:
+//!
 //! * Multiplication of two 32-bit values does not overflow field modulus.
 //! * Field arithmetic in this field can be implemented using a few 32-bit addition, subtractions,
 //!   and shifts.
 //! * $8$ is the 64th root of unity which opens up potential for optimized FFT implementations.
 
-use super::{ExtensibleField, FieldElement, StarkField};
+use alloc::{
+    string::{String, ToString},
+    vec::Vec,
+};
 use core::{
-    convert::{TryFrom, TryInto},
     fmt::{Debug, Display, Formatter},
     mem,
     ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign},
     slice,
 };
+
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
 use utils::{
-    collections::Vec, string::ToString, AsBytes, ByteReader, ByteWriter, Deserializable,
-    DeserializationError, Randomizable, Serializable,
+    AsBytes, ByteReader, ByteWriter, Deserializable, DeserializationError, Randomizable,
+    Serializable,
 };
+
+use super::{ExtensibleField, FieldElement, StarkField};
 
 #[cfg(test)]
 mod tests;
@@ -34,10 +43,10 @@ mod tests;
 // ================================================================================================
 
 /// Field modulus = 2^64 - 2^32 + 1
-const M: u64 = 0xFFFFFFFF00000001;
+const M: u64 = 0xffffffff00000001;
 
 /// 2^128 mod M; this is used for conversion of elements into Montgomery representation.
-const R2: u64 = 0xFFFFFFFE00000001;
+const R2: u64 = 0xfffffffe00000001;
 
 /// Number of bytes needed to represent field element
 const ELEMENT_BYTES: usize = core::mem::size_of::<u64>();
@@ -49,11 +58,17 @@ const ELEMENT_BYTES: usize = core::mem::size_of::<u64>();
 ///
 /// Internal values represent x * R mod M where R = 2^64 mod M and x in [0, M).
 /// The backing type is `u64` but the internal values are always in the range [0, M).
-#[derive(Copy, Clone, Debug, Default)]
+#[derive(Copy, Clone, Default)]
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+#[cfg_attr(feature = "serde", serde(try_from = "u64", into = "u64"))]
 pub struct BaseElement(u64);
+
 impl BaseElement {
     /// Creates a new field element from the provided `value`; the value is converted into
     /// Montgomery representation.
+    ///
+    /// If the value is greater than or equal to the field modulus, modular reduction is
+    /// silently performed.
     pub const fn new(value: u64) -> BaseElement {
         Self(mont_red_cst((value as u128) * (R2 as u128)))
     }
@@ -69,6 +84,12 @@ impl BaseElement {
         self.0
     }
 
+    /// Returns canonical integer representation of this field element.
+    #[inline(always)]
+    pub const fn as_int(&self) -> u64 {
+        mont_to_int(self.0)
+    }
+
     /// Computes an exponentiation to the power 7. This is useful for computing Rescue-Prime
     /// S-Box over this field.
     #[inline(always)]
@@ -82,7 +103,7 @@ impl BaseElement {
     /// Multiplies an element that is less than 2^32 by a field element. This implementation
     /// is faster as it avoids the use of Montgomery reduction.
     #[inline(always)]
-    pub fn mul_small(self, rhs: u32) -> Self {
+    pub const fn mul_small(self, rhs: u32) -> Self {
         let s = (self.inner() as u128) * (rhs as u128);
         let s_hi = (s >> 64) as u64;
         let s_lo = s as u64;
@@ -196,7 +217,7 @@ impl FieldElement for BaseElement {
     }
 
     unsafe fn bytes_as_elements(bytes: &[u8]) -> Result<&[Self], DeserializationError> {
-        if bytes.len() % Self::ELEMENT_BYTES != 0 {
+        if !bytes.len().is_multiple_of(Self::ELEMENT_BYTES) {
             return Err(DeserializationError::InvalidValue(format!(
                 "number of bytes ({}) does not divide into whole number of field elements",
                 bytes.len(),
@@ -206,31 +227,13 @@ impl FieldElement for BaseElement {
         let p = bytes.as_ptr();
         let len = bytes.len() / Self::ELEMENT_BYTES;
 
-        if (p as usize) % mem::align_of::<u64>() != 0 {
+        if !(p as usize).is_multiple_of(mem::align_of::<u64>()) {
             return Err(DeserializationError::InvalidValue(
                 "slice memory alignment is not valid for this field element type".to_string(),
             ));
         }
 
         Ok(slice::from_raw_parts(p as *const Self, len))
-    }
-
-    // UTILITIES
-    // --------------------------------------------------------------------------------------------
-
-    fn zeroed_vector(n: usize) -> Vec<Self> {
-        // this uses a specialized vector initialization code which requests zero-filled memory
-        // from the OS; unfortunately, this works only for built-in types and we can't use
-        // Self::ZERO here as much less efficient initialization procedure will be invoked.
-        // We also use u64 to make sure the memory is aligned correctly for our element size.
-        let result = vec![0u64; n];
-
-        // translate a zero-filled vector of u64s into a vector of base field elements
-        let mut v = core::mem::ManuallyDrop::new(result);
-        let p = v.as_mut_ptr();
-        let len = v.len();
-        let cap = v.capacity();
-        unsafe { Vec::from_raw_parts(p as *mut Self, len, cap) }
     }
 }
 
@@ -267,18 +270,9 @@ impl StarkField for BaseElement {
         M.to_le_bytes().to_vec()
     }
 
-    // Converts a field element in Montgomery form to canonical form. That is, given x, it computes
-    // x/2^64 modulo M. This is exactly what mont_red_cst does only that it does it more efficiently
-    // using the fact that a field element in Montgomery form is stored as a u64 and thus one can
-    // use this to simplify mont_red_cst in this case.
     #[inline]
     fn as_int(&self) -> Self::PositiveInteger {
-        let x = self.0;
-        let (a, e) = x.overflowing_add(x << 32);
-        let b = a.wrapping_sub(a >> 32).wrapping_sub(e as u64);
-
-        let (r, c) = 0u64.overflowing_sub(b);
-        r.wrapping_sub(0u32.wrapping_sub(c as u32) as u64)
+        mont_to_int(self.0)
     }
 }
 
@@ -287,6 +281,12 @@ impl Randomizable for BaseElement {
 
     fn from_random_bytes(bytes: &[u8]) -> Option<Self> {
         Self::try_from(bytes).ok()
+    }
+}
+
+impl Debug for BaseElement {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{self}")
     }
 }
 
@@ -302,7 +302,7 @@ impl Display for BaseElement {
 impl PartialEq for BaseElement {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
-        equals(self.0, other.0) == 0xFFFFFFFFFFFFFFFF
+        equals(self.0, other.0) == 0xffffffffffffffff
     }
 }
 
@@ -405,10 +405,7 @@ impl ExtensibleField<2> for BaseElement {
         // and 2 subtractions in the base field. overall, a single multiplication in the extension
         // field is slightly faster than 5 multiplications in the base field.
         let a0b0 = a[0] * b[0];
-        [
-            a0b0 - (a[1] * b[1]).double(),
-            (a[0] + a[1]) * (b[0] + b[1]) - a0b0,
-        ]
+        [a0b0 - (a[1] * b[1]).double(), (a[0] + a[1]) * (b[0] + b[1]) - a0b0]
     }
 
     #[inline(always)]
@@ -464,11 +461,7 @@ impl ExtensibleField<3> for BaseElement {
             a0b0_a0b1_a1b0_a1b1 + a1b1_a1b2_a2b1_a2b2 - a1b1.double() - a0b0;
         let a0b2_a1b1_a2b0_a2b2 = a0b0_a0b2_a2b0_a2b2 - a0b0_minus_a1b1;
 
-        [
-            a0b0_a1b2_a2b1,
-            a0b1_a1b0_a1b2_a2b1_a2b2,
-            a0b2_a1b1_a2b0_a2b2,
-        ]
+        [a0b0_a1b2_a2b1, a0b1_a1b0_a1b2_a2b1_a2b2, a0b2_a1b1_a2b0_a2b2]
     }
 
     #[inline(always)]
@@ -508,56 +501,79 @@ impl ExtensibleField<3> for BaseElement {
 // TYPE CONVERSIONS
 // ================================================================================================
 
-impl From<u128> for BaseElement {
-    /// Converts a 128-bit value into a field element.
-    fn from(x: u128) -> Self {
-        //const R3: u128 = 1 (= 2^192 mod M );// thus we get that mont_red_var((mont_red_var(x) as u128) * R3) becomes
-        //Self(mont_red_var(mont_red_var(x) as u128))  // Variable time implementation
-        Self(mont_red_cst(mont_red_cst(x) as u128)) // Constant time implementation
-    }
-}
-
-impl From<u64> for BaseElement {
-    /// Converts a 64-bit value into a field element. If the value is greater than or equal to
-    /// the field modulus, modular reduction is silently performed.
-    fn from(value: u64) -> Self {
-        Self::new(value)
-    }
-}
-
-impl From<u32> for BaseElement {
-    /// Converts a 32-bit value into a field element.
-    fn from(value: u32) -> Self {
-        Self::new(value as u64)
-    }
-}
-
-impl From<u16> for BaseElement {
-    /// Converts a 16-bit value into a field element.
-    fn from(value: u16) -> Self {
-        Self::new(value as u64)
+impl From<bool> for BaseElement {
+    fn from(value: bool) -> Self {
+        Self::new(value.into())
     }
 }
 
 impl From<u8> for BaseElement {
-    /// Converts an 8-bit value into a field element.
     fn from(value: u8) -> Self {
-        Self::new(value as u64)
+        Self::new(value.into())
     }
 }
 
-impl From<[u8; 8]> for BaseElement {
-    /// Converts the value encoded in an array of 8 bytes into a field element. The bytes are
-    /// assumed to encode the element in the canonical representation in little-endian byte order.
-    /// If the value is greater than or equal to the field modulus, modular reduction is silently
-    /// performed.
-    fn from(bytes: [u8; 8]) -> Self {
+impl From<u16> for BaseElement {
+    fn from(value: u16) -> Self {
+        Self::new(value.into())
+    }
+}
+
+impl From<u32> for BaseElement {
+    fn from(value: u32) -> Self {
+        Self::new(value.into())
+    }
+}
+
+impl TryFrom<u64> for BaseElement {
+    type Error = String;
+
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        if value >= M {
+            Err(format!(
+                "invalid field element: value {value} is greater than or equal to the field modulus"
+            ))
+        } else {
+            Ok(Self::new(value))
+        }
+    }
+}
+
+impl TryFrom<u128> for BaseElement {
+    type Error = String;
+
+    fn try_from(value: u128) -> Result<Self, Self::Error> {
+        if value >= M.into() {
+            Err(format!(
+                "invalid field element: value {value} is greater than or equal to the field modulus"
+            ))
+        } else {
+            Ok(Self::new(value as u64))
+        }
+    }
+}
+
+impl TryFrom<usize> for BaseElement {
+    type Error = String;
+
+    fn try_from(value: usize) -> Result<Self, Self::Error> {
+        match u64::try_from(value) {
+            Err(_) => Err(format!("invalid field element: value {value} does not fit in a u64")),
+            Ok(v) => v.try_into(),
+        }
+    }
+}
+
+impl TryFrom<[u8; 8]> for BaseElement {
+    type Error = String;
+
+    fn try_from(bytes: [u8; 8]) -> Result<Self, Self::Error> {
         let value = u64::from_le_bytes(bytes);
-        Self::new(value)
+        Self::try_from(value)
     }
 }
 
-impl<'a> TryFrom<&'a [u8]> for BaseElement {
+impl TryFrom<&'_ [u8]> for BaseElement {
     type Error = DeserializationError;
 
     /// Converts a slice of bytes into a field element; returns error if the value encoded in bytes
@@ -578,16 +594,56 @@ impl<'a> TryFrom<&'a [u8]> for BaseElement {
                 bytes.len(),
             )));
         }
-        let value = bytes
-            .try_into()
-            .map(u64::from_le_bytes)
-            .map_err(|error| DeserializationError::UnknownError(format!("{error}")))?;
-        if value >= M {
-            return Err(DeserializationError::InvalidValue(format!(
-                "invalid field element: value {value} is greater than or equal to the field modulus"
-            )));
+        let bytes: [u8; 8] = bytes.try_into().expect("slice to array conversion failed");
+        bytes.try_into().map_err(DeserializationError::InvalidValue)
+    }
+}
+
+impl TryFrom<BaseElement> for bool {
+    type Error = String;
+
+    fn try_from(value: BaseElement) -> Result<Self, Self::Error> {
+        match value.as_int() {
+            0 => Ok(false),
+            1 => Ok(true),
+            v => Err(format!("Field element does not represent a boolean, got {v}")),
         }
-        Ok(Self::new(value))
+    }
+}
+
+impl TryFrom<BaseElement> for u8 {
+    type Error = String;
+
+    fn try_from(value: BaseElement) -> Result<Self, Self::Error> {
+        value.as_int().try_into().map_err(|e| format!("{e}"))
+    }
+}
+
+impl TryFrom<BaseElement> for u16 {
+    type Error = String;
+
+    fn try_from(value: BaseElement) -> Result<Self, Self::Error> {
+        value.as_int().try_into().map_err(|e| format!("{e}"))
+    }
+}
+
+impl TryFrom<BaseElement> for u32 {
+    type Error = String;
+
+    fn try_from(value: BaseElement) -> Result<Self, Self::Error> {
+        value.as_int().try_into().map_err(|e| format!("{e}"))
+    }
+}
+
+impl From<BaseElement> for u64 {
+    fn from(value: BaseElement) -> Self {
+        value.as_int()
+    }
+}
+
+impl From<BaseElement> for u128 {
+    fn from(value: BaseElement) -> Self {
+        value.as_int().into()
     }
 }
 
@@ -600,12 +656,16 @@ impl AsBytes for BaseElement {
 }
 
 // SERIALIZATION / DESERIALIZATION
-// ------------------------------------------------------------------------------------------------
+// ================================================================================================
 
 impl Serializable for BaseElement {
     fn write_into<W: ByteWriter>(&self, target: &mut W) {
         // convert from Montgomery representation into canonical representation
         target.write_bytes(&self.as_int().to_le_bytes());
+    }
+
+    fn get_size_hint(&self) -> usize {
+        self.as_int().get_size_hint()
     }
 }
 
@@ -620,6 +680,9 @@ impl Deserializable for BaseElement {
         Ok(Self::new(value))
     }
 }
+
+// HELPER FUNCTIONS
+// ================================================================================================
 
 /// Squares the base N number of times and multiplies the result by the tail value.
 #[inline(always)]
@@ -660,10 +723,23 @@ const fn mont_red_cst(x: u128) -> u64 {
     r.wrapping_sub(0u32.wrapping_sub(c as u32) as u64)
 }
 
+// Converts a field element in Montgomery form to canonical form. That is, given x, it computes
+// x/2^64 modulo M. This is exactly what mont_red_cst does only that it does it more efficiently
+// using the fact that a field element in Montgomery form is stored as a u64 and thus one can
+// use this to simplify mont_red_cst in this case.
+#[inline(always)]
+const fn mont_to_int(x: u64) -> u64 {
+    let (a, e) = x.overflowing_add(x << 32);
+    let b = a.wrapping_sub(a >> 32).wrapping_sub(e as u64);
+
+    let (r, c) = 0u64.overflowing_sub(b);
+    r.wrapping_sub(0u32.wrapping_sub(c as u32) as u64)
+}
+
 /// Test of equality between two BaseField elements; return value is
 /// 0xFFFFFFFFFFFFFFFF if the two values are equal, or 0 otherwise.
 #[inline(always)]
-pub fn equals(lhs: u64, rhs: u64) -> u64 {
+fn equals(lhs: u64, rhs: u64) -> u64 {
     let t = lhs ^ rhs;
     !((((t | t.wrapping_neg()) as i64) >> 63) as u64)
 }

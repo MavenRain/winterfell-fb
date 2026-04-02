@@ -3,14 +3,16 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
-use crate::StarkDomain;
+use alloc::vec::Vec;
 use core::{iter::FusedIterator, slice};
-use crypto::{ElementHasher, MerkleTree};
-use math::{fft, polynom, FieldElement};
-use utils::{batch_iter_mut, collections::Vec, iter, iter_mut, uninit_vector};
 
+use crypto::{ElementHasher, VectorCommitment};
+use math::{fft, polynom, FieldElement};
 #[cfg(feature = "concurrent")]
 use utils::iterators::*;
+use utils::{batch_iter_mut, iter, iter_mut, uninit_vector};
+
+use crate::StarkDomain;
 
 // COLUMN-MAJOR MATRIX
 // ================================================================================================
@@ -44,25 +46,12 @@ impl<E: FieldElement> ColMatrix<E> {
     /// * Number of rows is smaller than or equal to 1.
     /// * Number of rows is not a power of two.
     pub fn new(columns: Vec<Vec<E>>) -> Self {
-        assert!(
-            !columns.is_empty(),
-            "a matrix must contain at least one column"
-        );
+        assert!(!columns.is_empty(), "a matrix must contain at least one column");
         let num_rows = columns[0].len();
-        assert!(
-            num_rows > 1,
-            "number of rows in a matrix must be greater than one"
-        );
-        assert!(
-            num_rows.is_power_of_two(),
-            "number of rows in a matrix must be a power of 2"
-        );
+        assert!(num_rows > 1, "number of rows in a matrix must be greater than one");
+        assert!(num_rows.is_power_of_two(), "number of rows in a matrix must be a power of 2");
         for column in columns.iter().skip(1) {
-            assert_eq!(
-                column.len(),
-                num_rows,
-                "all matrix columns must have the same length"
-            );
+            assert_eq!(column.len(), num_rows, "all matrix columns must have the same length");
         }
 
         Self { columns }
@@ -111,10 +100,8 @@ impl<E: FieldElement> ColMatrix<E> {
     /// # Panics
     /// Panics if either `base_col_idx` or `row_idx` are out of bounds for this matrix.
     pub fn get_base_element(&self, base_col_idx: usize, row_idx: usize) -> E::BaseField {
-        let (col_idx, elem_idx) = (
-            base_col_idx / E::EXTENSION_DEGREE,
-            base_col_idx % E::EXTENSION_DEGREE,
-        );
+        let (col_idx, elem_idx) =
+            (base_col_idx / E::EXTENSION_DEGREE, base_col_idx % E::EXTENSION_DEGREE);
         self.columns[col_idx][row_idx].base_element(elem_idx)
     }
 
@@ -156,16 +143,36 @@ impl<E: FieldElement> ColMatrix<E> {
         }
     }
 
+    /// Merges a column to the end of the matrix provided its length matches the matrix.
+    ///
+    /// # Panics
+    /// Panics if the column has a different length to other columns in the matrix.
+    pub fn merge_column(&mut self, column: Vec<E>) {
+        if let Some(first_column) = self.columns.first() {
+            assert_eq!(first_column.len(), column.len());
+        }
+        self.columns.push(column);
+    }
+
+    /// Removes a column of the matrix given its index.
+    ///
+    /// # Panics
+    /// Panics if the column index is out of range.
+    pub fn remove_column(&mut self, index: usize) -> Vec<E> {
+        assert!(index < self.num_cols(), "column index out of range");
+        self.columns.remove(index)
+    }
+
     // ITERATION
     // --------------------------------------------------------------------------------------------
 
     /// Returns an iterator over the columns of this matrix.
-    pub fn columns(&self) -> ColumnIter<E> {
+    pub fn columns(&self) -> ColumnIter<'_, E> {
         ColumnIter::new(self)
     }
 
     /// Returns a mutable iterator over the columns of this matrix.
-    pub fn columns_mut(&mut self) -> ColumnIterMut<E> {
+    pub fn columns_mut(&mut self) -> ColumnIterMut<'_, E> {
         ColumnIterMut::new(self)
     }
 
@@ -216,9 +223,9 @@ impl<E: FieldElement> ColMatrix<E> {
     /// The evaluation is done as follows:
     /// * Each column of the matrix is interpreted as coefficients of degree `num_rows - 1`
     ///   polynomial.
-    /// * These polynomials are evaluated over the LDE domain defined by the specified
-    ///   [StarkDomain] using FFT algorithm. The domain specification includes the size of the
-    ///   subgroup as well as the domain offset (to define a coset).
+    /// * These polynomials are evaluated over the LDE domain defined by the specified [StarkDomain]
+    ///   using FFT algorithm. The domain specification includes the size of the subgroup as well as
+    ///   the domain offset (to define a coset).
     /// * The resulting evaluations are returned in a new Matrix.
     pub fn evaluate_columns_over(&self, domain: &StarkDomain<E::BaseField>) -> Self {
         let columns = iter!(self.columns)
@@ -249,13 +256,13 @@ impl<E: FieldElement> ColMatrix<E> {
     ///
     /// The commitment is built as follows:
     /// * Each row of the matrix is hashed into a single digest of the specified hash function.
-    /// * The resulting values are used to built a binary Merkle tree such that each row digest
-    ///   becomes a leaf in the tree. Thus, the number of leaves in the tree is equal to the
-    ///   number of rows in the matrix.
-    /// * The resulting Merkle tree is return as the commitment to the entire matrix.
-    pub fn commit_to_rows<H>(&self) -> MerkleTree<H>
+    /// * The resulting vector of digests is committed to using the specified vector commitment
+    ///   scheme.
+    /// * The resulting commitment is returned as the commitment to the entire matrix.
+    pub fn commit_to_rows<H, V>(&self) -> V
     where
         H: ElementHasher<BaseField = E::BaseField>,
+        V: VectorCommitment<H>,
     {
         // allocate vector to store row hashes
         let mut row_hashes = unsafe { uninit_vector::<H::Digest>(self.num_rows()) };
@@ -275,8 +282,7 @@ impl<E: FieldElement> ColMatrix<E> {
             }
         );
 
-        // build Merkle tree out of hashed rows
-        MerkleTree::new(row_hashes).expect("failed to construct trace Merkle tree")
+        V::new(row_hashes).expect("failed to construct trace vector commitment")
     }
 
     // CONVERSIONS
@@ -293,14 +299,19 @@ impl<E: FieldElement> ColMatrix<E> {
 // COLUMN ITERATOR
 // ================================================================================================
 
+/// Iterator over columns of [ColMatrix].
 pub struct ColumnIter<'a, E: FieldElement> {
-    matrix: &'a ColMatrix<E>,
+    matrix: Option<&'a ColMatrix<E>>,
     cursor: usize,
 }
 
 impl<'a, E: FieldElement> ColumnIter<'a, E> {
     pub fn new(matrix: &'a ColMatrix<E>) -> Self {
-        Self { matrix, cursor: 0 }
+        Self { matrix: Some(matrix), cursor: 0 }
+    }
+
+    pub fn empty() -> Self {
+        Self { matrix: None, cursor: 0 }
     }
 }
 
@@ -308,28 +319,38 @@ impl<'a, E: FieldElement> Iterator for ColumnIter<'a, E> {
     type Item = &'a [E];
 
     fn next(&mut self) -> Option<Self::Item> {
-        match self.matrix.num_cols() - self.cursor {
-            0 => None,
-            _ => {
-                let column = self.matrix.get_column(self.cursor);
-                self.cursor += 1;
-                Some(column)
-            }
+        match self.matrix {
+            Some(matrix) => match matrix.num_cols() - self.cursor {
+                0 => None,
+                _ => {
+                    let column = matrix.get_column(self.cursor);
+                    self.cursor += 1;
+                    Some(column)
+                },
+            },
+            None => None,
         }
     }
 }
 
-impl<'a, E: FieldElement> ExactSizeIterator for ColumnIter<'a, E> {
+impl<E: FieldElement> ExactSizeIterator for ColumnIter<'_, E> {
     fn len(&self) -> usize {
-        self.matrix.num_cols()
+        self.matrix.map(|matrix| matrix.num_cols()).unwrap_or_default()
     }
 }
 
-impl<'a, E: FieldElement> FusedIterator for ColumnIter<'a, E> {}
+impl<E: FieldElement> FusedIterator for ColumnIter<'_, E> {}
+
+impl<E: FieldElement> Default for ColumnIter<'_, E> {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
 
 // MUTABLE COLUMN ITERATOR
 // ================================================================================================
 
+/// Iterator over mutable columns of [ColMatrix].
 pub struct ColumnIterMut<'a, E: FieldElement> {
     matrix: &'a mut ColMatrix<E>,
     cursor: usize,
@@ -356,77 +377,15 @@ impl<'a, E: FieldElement> Iterator for ColumnIterMut<'a, E> {
                 let p = column.as_ptr();
                 let len = column.len();
                 Some(unsafe { slice::from_raw_parts_mut(p as *mut E, len) })
-            }
+            },
         }
     }
 }
 
-impl<'a, E: FieldElement> ExactSizeIterator for ColumnIterMut<'a, E> {
+impl<E: FieldElement> ExactSizeIterator for ColumnIterMut<'_, E> {
     fn len(&self) -> usize {
         self.matrix.num_cols()
     }
 }
 
-impl<'a, E: FieldElement> FusedIterator for ColumnIterMut<'a, E> {}
-
-// MULTI-MATRIX COLUMN ITERATOR
-// ================================================================================================
-
-pub struct MultiColumnIter<'a, E: FieldElement> {
-    matrixes: &'a [ColMatrix<E>],
-    m_cursor: usize,
-    c_cursor: usize,
-}
-
-impl<'a, E: FieldElement> MultiColumnIter<'a, E> {
-    pub fn new(matrixes: &'a [ColMatrix<E>]) -> Self {
-        // make sure all matrixes have the same number of rows
-        if !matrixes.is_empty() {
-            let num_rows = matrixes[0].num_rows();
-            for matrix in matrixes.iter().skip(1) {
-                assert_eq!(
-                    matrix.num_rows(),
-                    num_rows,
-                    "all matrixes must have the same number of rows"
-                );
-            }
-        }
-
-        Self {
-            matrixes,
-            m_cursor: 0,
-            c_cursor: 0,
-        }
-    }
-}
-
-impl<'a, E: FieldElement> Iterator for MultiColumnIter<'a, E> {
-    type Item = &'a [E];
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.matrixes.is_empty() {
-            return None;
-        }
-        let matrix = &self.matrixes[self.m_cursor];
-        match matrix.num_cols() - self.c_cursor {
-            0 => None,
-            _ => {
-                let column = matrix.get_column(self.c_cursor);
-                self.c_cursor += 1;
-                if self.c_cursor == matrix.num_cols() && self.m_cursor < self.matrixes.len() - 1 {
-                    self.m_cursor += 1;
-                    self.c_cursor = 0;
-                }
-                Some(column)
-            }
-        }
-    }
-}
-
-impl<'a, E: FieldElement> ExactSizeIterator for MultiColumnIter<'a, E> {
-    fn len(&self) -> usize {
-        self.matrixes.iter().fold(0, |s, m| s + m.num_cols())
-    }
-}
-
-impl<'a, E: FieldElement> FusedIterator for MultiColumnIter<'a, E> {}
+impl<E: FieldElement> FusedIterator for ColumnIterMut<'_, E> {}

@@ -3,9 +3,12 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
+use alloc::vec::Vec;
+use core::cmp;
+
+use math::StarkField;
+
 use crate::{air::TransitionConstraintDegree, ProofOptions, TraceInfo};
-use math::{log2, StarkField};
-use utils::collections::Vec;
 
 // AIR CONTEXT
 // ================================================================================================
@@ -39,8 +42,8 @@ impl<B: StarkField> AirContext<B> {
     /// Panics if
     /// * `transition_constraint_degrees` is an empty vector.
     /// * `num_assertions` is zero.
-    /// * Blowup factor specified by the provided `options` is too small to accommodate degrees
-    ///   of the specified transition constraints.
+    /// * Blowup factor specified by the provided `options` is too small to accommodate degrees of
+    ///   the specified transition constraints.
     /// * `trace_info` describes a multi-segment execution trace.
     pub fn new(
         trace_info: TraceInfo,
@@ -82,8 +85,8 @@ impl<B: StarkField> AirContext<B> {
     /// * `trace_info.is_multi_segment() == false` but:
     ///   - `aux_transition_constraint_degrees` is a non-empty vector.
     ///   - `num_aux_assertions` is greater than zero.
-    /// * Blowup factor specified by the provided `options` is too small to accommodate degrees
-    ///   of the specified transition constraints.
+    /// * Blowup factor specified by the provided `options` is too small to accommodate degrees of
+    ///   the specified transition constraints.
     pub fn new_multi_segment(
         trace_info: TraceInfo,
         main_transition_constraint_degrees: Vec<TransitionConstraintDegree>,
@@ -96,19 +99,16 @@ impl<B: StarkField> AirContext<B> {
             !main_transition_constraint_degrees.is_empty(),
             "at least one transition constraint degree must be specified"
         );
-        assert!(
-            num_main_assertions > 0,
-            "at least one assertion must be specified"
-        );
+        assert!(num_main_assertions > 0, "at least one assertion must be specified");
 
         if trace_info.is_multi_segment() {
             assert!(
                 !aux_transition_constraint_degrees.is_empty(),
-                "at least one transition constraint degree must be specified for auxiliary trace segments"
-            );
+                "at least one transition constraint degree must be specified for the auxiliary trace segment"
+                );
             assert!(
                 num_aux_assertions > 0,
-                "at least one assertion must be specified against auxiliary trace segments"
+                "at least one assertion must be specified against the auxiliary trace segment"
             );
         } else {
             assert!(
@@ -154,8 +154,8 @@ impl<B: StarkField> AirContext<B> {
             num_main_assertions,
             num_aux_assertions,
             ce_blowup_factor,
-            trace_domain_generator: B::get_root_of_unity(log2(trace_length)),
-            lde_domain_generator: B::get_root_of_unity(log2(lde_domain_size)),
+            trace_domain_generator: B::get_root_of_unity(trace_length.ilog2()),
+            lde_domain_generator: B::get_root_of_unity(lde_domain_size.ilog2()),
             num_transition_exemptions: 1,
         }
     }
@@ -163,9 +163,14 @@ impl<B: StarkField> AirContext<B> {
     // PUBLIC ACCESSORS
     // --------------------------------------------------------------------------------------------
 
+    /// Returns the trace info for an instance of a computation.
+    pub fn trace_info(&self) -> &TraceInfo {
+        &self.trace_info
+    }
+
     /// Returns length of the execution trace for an instance of a computation.
     ///
-    // This is guaranteed to be a power of two greater than or equal to 8.
+    /// This is guaranteed to be a power of two greater than or equal to 8.
     pub fn trace_len(&self) -> usize {
         self.trace_info.length()
     }
@@ -184,14 +189,6 @@ impl<B: StarkField> AirContext<B> {
         self.trace_info.length() * self.ce_blowup_factor
     }
 
-    /// Returns the degree to which all constraint polynomials are normalized before they are
-    /// composed together.
-    ///
-    /// This degree is always `ce_domain_size` - 1.
-    pub fn composition_degree(&self) -> usize {
-        self.ce_domain_size() - 1
-    }
-
     /// Returns the size of the low-degree extension domain.
     ///
     /// This is guaranteed to be a power of two, and is equal to `trace_length * lde_blowup_factor`.
@@ -201,10 +198,10 @@ impl<B: StarkField> AirContext<B> {
 
     /// Returns the number of transition constraints for a computation.
     ///
-    /// The number of transition constraints is defined by the total number of transition
-    /// constraint degree descriptors (for both the main and the auxiliary trace constraints).
-    /// This number is used to determine how many transition constraint coefficients need to be
-    /// generated for merging transition constraints into a composition polynomial.
+    /// The number of transition constraints is defined by the total number of transition constraint
+    /// degree descriptors (for both the main and the auxiliary trace constraints). This number is
+    /// used to determine how many transition constraint coefficients need to be generated for
+    /// merging transition constraints into a constraint composition polynomial.
     pub fn num_transition_constraints(&self) -> usize {
         self.main_transition_constraint_degrees.len() + self.aux_transition_constraint_degrees.len()
     }
@@ -214,7 +211,7 @@ impl<B: StarkField> AirContext<B> {
         self.main_transition_constraint_degrees.len()
     }
 
-    /// Returns the number of transition constraints placed against all auxiliary trace segments.
+    /// Returns the number of transition constraints placed against the auxiliary trace segment.
     pub fn num_aux_transition_constraints(&self) -> usize {
         self.aux_transition_constraint_degrees.len()
     }
@@ -222,7 +219,7 @@ impl<B: StarkField> AirContext<B> {
     /// Returns the total number of assertions defined for a computation.
     ///
     /// The number of assertions consists of the assertions placed against the main segment of an
-    /// execution trace as well as assertions placed against all auxiliary trace segments.
+    /// execution trace as well as assertions placed against the auxiliary trace segment.
     pub fn num_assertions(&self) -> usize {
         self.num_main_assertions + self.num_aux_assertions
     }
@@ -235,6 +232,56 @@ impl<B: StarkField> AirContext<B> {
     /// degrees and blowup factor specified for the computation.
     pub fn num_transition_exemptions(&self) -> usize {
         self.num_transition_exemptions
+    }
+
+    /// Returns the number of columns needed to store the constraint composition polynomial.
+    ///
+    /// This is the maximum of:
+    /// 1. The maximum evaluation degree over all transition constraints minus the degree of the
+    ///    transition constraint divisor divided by trace length.
+    /// 2. `1`, because the constraint composition polynomial requires at least one column.
+    ///
+    /// Since the degree of a constraint `C(x)` can be computed as
+    ///
+    ///   `[constraint.base + constraint.cycles.len()] * [trace_length - 1]`
+    ///
+    /// the degree of the constraint composition polynomial can be computed as:
+    ///
+    ///   `([constraint.base + constraint.cycles.len()] * [trace_length - 1] - [trace_length - n])`
+    ///
+    /// where `constraint` is the constraint attaining the maximum and `n` is the number of
+    /// exemption points. In the case `n = 1`, the expression simplifies to:
+    ///
+    ///   `[constraint.base + constraint.cycles.len() - 1] * [trace_length - 1]`
+    ///
+    /// Thus, if each column is of length `trace_length`, we would need
+    ///
+    ///   `[constraint.base + constraint.cycles.len() - 1]`
+    ///
+    /// columns to store the coefficients of the constraint composition polynomial. This means that
+    /// if the highest constraint degree is equal to `5`, the constraint composition polynomial will
+    /// require four columns and if the highest constraint degree is equal to `7`, it will require
+    /// six columns to store.
+    pub fn num_constraint_composition_columns(&self) -> usize {
+        let mut highest_constraint_degree = 0_usize;
+        for degree in self
+            .main_transition_constraint_degrees
+            .iter()
+            .chain(self.aux_transition_constraint_degrees.iter())
+        {
+            let eval_degree = degree.get_evaluation_degree(self.trace_len());
+            if eval_degree > highest_constraint_degree {
+                highest_constraint_degree = eval_degree
+            }
+        }
+        let trace_length = self.trace_len();
+        let transition_divisior_degree = trace_length - self.num_transition_exemptions();
+
+        // we use the identity: ceil(a/b) = (a + b - 1)/b
+        let num_constraint_col =
+            (highest_constraint_degree - transition_divisior_degree).div_ceil(trace_length);
+
+        cmp::max(num_constraint_col, 1)
     }
 
     // DATA MUTATORS
@@ -250,10 +297,7 @@ impl<B: StarkField> AirContext<B> {
     ///   context, the number of exemptions is too larger for a valid computation of the constraint
     ///   composition polynomial.
     pub fn set_num_transition_exemptions(mut self, n: usize) -> Self {
-        assert!(
-            n > 0,
-            "number of transition exemptions must be greater than zero"
-        );
+        assert!(n > 0, "number of transition exemptions must be greater than zero");
         // exemptions which are for more than half the trace plus one are probably a mistake
         assert!(
             n <= self.trace_len() / 2 + 1,
@@ -262,14 +306,20 @@ impl<B: StarkField> AirContext<B> {
             n
         );
         // make sure the composition polynomial can be computed correctly with the specified
-        // number of exemptions
+        // number of exemptions.
+        // The `ce_blowup` factor puts a ceiling on the maximal degree of a constraint composition
+        // polynomial we can accommodate. On the other hand, adding exemption points reduces the
+        // degree of the divisor which results in an increase of the resulting constraint
+        // composition polynomial.Thus we need to check that the number of exemption points
+        // is not too large given the above.
         for degree in self
             .main_transition_constraint_degrees
             .iter()
             .chain(self.aux_transition_constraint_degrees.iter())
         {
             let eval_degree = degree.get_evaluation_degree(self.trace_len());
-            let max_exemptions = self.composition_degree() + self.trace_len() - eval_degree;
+            let max_constraint_composition_degree = self.ce_domain_size() - 1;
+            let max_exemptions = max_constraint_composition_degree + self.trace_len() - eval_degree;
             assert!(
                 n <= max_exemptions,
                 "number of transition exemptions cannot exceed: {max_exemptions}, but was {n}"

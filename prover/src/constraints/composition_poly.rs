@@ -3,48 +3,78 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
-use super::{ColMatrix, StarkDomain};
-use math::{polynom, FieldElement, StarkField};
-use utils::{collections::Vec, uninit_vector};
+use alloc::vec::Vec;
 
-// COMPOSITION POLYNOMIAL
+use air::proof::QuotientOodFrame;
+use math::{fft, polynom::degree_of, FieldElement, StarkField};
+
+use super::{ColMatrix, StarkDomain};
+
+// CONSTRAINT COMPOSITION POLYNOMIAL TRACE
 // ================================================================================================
-/// Represents a composition polynomial split into columns with each column being of length equal
-/// to trace_length. Thus, for example, if the composition polynomial has degree 2N - 1, where N
-/// is the trace length, it will be stored as two columns of size N (each of degree N - 1).
+
+/// Represents merged evaluations of all constraint evaluations.
+pub struct CompositionPolyTrace<E>(Vec<E>);
+
+impl<E: FieldElement> CompositionPolyTrace<E> {
+    /// Returns a new instance of [CompositionPolyTrace] instantiated from the provided evaluations.
+    ///
+    /// # Panics
+    /// Panics if the number of evaluations is not a power of 2.
+    pub fn new(evaluations: Vec<E>) -> Self {
+        assert!(
+            evaluations.len().is_power_of_two(),
+            "length of composition polynomial trace must be a power of 2, but was {}",
+            evaluations.len(),
+        );
+
+        Self(evaluations)
+    }
+
+    /// Returns the number of evaluations in this trace.
+    pub fn num_rows(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Returns the internal vector representing this trace.
+    pub fn into_inner(self) -> Vec<E> {
+        self.0
+    }
+}
+
+// CONSTRAINT COMPOSITION POLYNOMIAL
+// ================================================================================================
+/// A composition polynomial split into columns with each column being of length equal to
+/// trace_length.
+///
+/// For example, if the composition polynomial has degree 2N - 1, where N is the trace length,
+/// it will be stored as two columns of size N (each of degree N - 1).
 pub struct CompositionPoly<E: FieldElement> {
     data: ColMatrix<E>,
 }
 
 impl<E: FieldElement> CompositionPoly<E> {
     /// Returns a new composition polynomial.
-    pub fn new(coefficients: Vec<E>, trace_length: usize) -> Self {
+    pub fn new(
+        composition_trace: CompositionPolyTrace<E>,
+        domain: &StarkDomain<E::BaseField>,
+        num_cols: usize,
+    ) -> Self {
         assert!(
-            coefficients.len().is_power_of_two(),
-            "size of composition polynomial must be a power of 2, but was {}",
-            coefficients.len(),
-        );
-        assert!(
-            trace_length.is_power_of_two(),
-            "trace length must be a power of 2, but was {trace_length}"
-        );
-        assert!(
-            trace_length < coefficients.len(),
-            "trace length must be smaller than size of composition polynomial"
-        );
-        assert!(
-            coefficients[coefficients.len() - 1] != E::ZERO,
-            "expected composition polynomial of degree {}, but was {}",
-            coefficients.len() - 1,
-            polynom::degree_of(&coefficients)
+            domain.trace_length() < composition_trace.num_rows(),
+            "trace length must be smaller than length of composition polynomial trace"
         );
 
-        let num_columns = coefficients.len() / trace_length;
-        let polys = transpose(coefficients, num_columns);
+        let mut trace = composition_trace.into_inner();
 
-        CompositionPoly {
-            data: ColMatrix::new(polys),
-        }
+        // at this point, combined_poly contains evaluations of the combined constraint polynomial;
+        // we interpolate this polynomial to transform it into coefficient form.
+        let inv_twiddles = fft::get_inv_twiddles::<E::BaseField>(trace.len());
+        fft::interpolate_poly_with_offset(&mut trace, &inv_twiddles, domain.offset());
+
+        let polys = segment(trace, domain.trace_length(), num_cols);
+
+        CompositionPoly { data: ColMatrix::new(polys) }
     }
 
     // PUBLIC ACCESSORS
@@ -67,31 +97,19 @@ impl<E: FieldElement> CompositionPoly<E> {
         self.column_len() - 1
     }
 
-    // LOW-DEGREE EXTENSION
-    // --------------------------------------------------------------------------------------------
-    /// Evaluates the columns of the composition polynomial over the specified LDE domain and
-    /// returns the result.
-    pub fn evaluate<B>(&self, domain: &StarkDomain<B>) -> ColMatrix<E>
-    where
-        B: StarkField,
-        E: FieldElement<BaseField = B>,
-    {
-        assert_eq!(
-            self.column_len(),
-            domain.trace_length(),
-            "inconsistent trace domain size; expected {}, but received {}",
-            self.column_len(),
-            domain.trace_length()
-        );
+    /// Returns evaluations of all composition polynomial columns at points `z` and `g * z`.
+    pub fn get_ood_frame(&self, z: E) -> QuotientOodFrame<E> {
+        let log_trace_len = self.column_len().ilog2();
+        let g = E::from(E::BaseField::get_root_of_unity(log_trace_len));
+        let current_row = self.data.evaluate_columns_at(z);
+        let next_row = self.data.evaluate_columns_at(z * g);
 
-        self.data.evaluate_columns_over(domain)
+        QuotientOodFrame::new(current_row, next_row)
     }
 
-    /// Returns evaluations of all composition polynomial columns at point z^m, where m is
-    /// the number of column polynomials.
-    pub fn evaluate_at(&self, z: E) -> Vec<E> {
-        let z_m = z.exp((self.num_columns() as u32).into());
-        self.data.evaluate_columns_at(z_m)
+    /// Returns a reference to the matrix of individual column polynomials.
+    pub fn data(&self) -> &ColMatrix<E> {
+        &self.data
     }
 
     /// Transforms this composition polynomial into a vector of individual column polynomials.
@@ -105,25 +123,20 @@ impl<E: FieldElement> CompositionPoly<E> {
 
 /// Splits polynomial coefficients into the specified number of columns. The coefficients are split
 /// in such a way that each resulting column has the same degree. For example, a polynomial
-/// a * x^3 + b * x^2 + c * x + d, can be rewritten as: (b * x^2 + d) + x * (a * x^2 + c), and then
-/// the two columns will be: (b * x^2 + d) and (a * x^2 + c).
-fn transpose<E: FieldElement>(coefficients: Vec<E>, num_columns: usize) -> Vec<Vec<E>> {
-    let column_len = coefficients.len() / num_columns;
+/// a * x^3 + b * x^2 + c * x + d, can be rewritten as: (c * x + d) + x^2 * (a * x + b), and then
+/// the two columns will be: (c * x + d) and (a * x + b).
+fn segment<E: FieldElement>(
+    coefficients: Vec<E>,
+    trace_len: usize,
+    num_cols: usize,
+) -> Vec<Vec<E>> {
+    debug_assert!(degree_of(&coefficients) < trace_len * num_cols);
 
-    let mut result = unsafe {
-        (0..num_columns)
-            .map(|_| uninit_vector(column_len))
-            .collect::<Vec<_>>()
-    };
-
-    // TODO: implement multi-threaded version
-    for (i, coeff) in coefficients.into_iter().enumerate() {
-        let row_idx = i / num_columns;
-        let col_idx = i % num_columns;
-        result[col_idx][row_idx] = coeff;
-    }
-
-    result
+    coefficients
+        .chunks(trace_len)
+        .take(num_cols)
+        .map(|slice| slice.to_vec())
+        .collect()
 }
 
 // TESTS
@@ -132,20 +145,21 @@ fn transpose<E: FieldElement>(coefficients: Vec<E>, num_columns: usize) -> Vec<V
 #[cfg(test)]
 mod tests {
 
+    use alloc::vec::Vec;
+
     use math::fields::f128::BaseElement;
-    use utils::collections::Vec;
 
     #[test]
-    fn transpose() {
+    fn segment() {
         let values = (0u128..16).map(BaseElement::new).collect::<Vec<_>>();
-        let actual = super::transpose(values, 4);
+        let actual = super::segment(values, 4, 4);
 
         #[rustfmt::skip]
         let expected = vec![
-            vec![BaseElement::new(0), BaseElement::new(4), BaseElement::new(8), BaseElement::new(12)],
-            vec![BaseElement::new(1), BaseElement::new(5), BaseElement::new(9), BaseElement::new(13)],
-            vec![BaseElement::new(2), BaseElement::new(6), BaseElement::new(10), BaseElement::new(14)],
-            vec![BaseElement::new(3), BaseElement::new(7), BaseElement::new(11), BaseElement::new(15)],
+            vec![BaseElement::new(0), BaseElement::new(1), BaseElement::new(2), BaseElement::new(3)],
+            vec![BaseElement::new(4), BaseElement::new(5), BaseElement::new(6), BaseElement::new(7)],
+            vec![BaseElement::new(8), BaseElement::new(9), BaseElement::new(10), BaseElement::new(11)],
+            vec![BaseElement::new(12), BaseElement::new(13), BaseElement::new(14), BaseElement::new(15)],
         ];
 
         assert_eq!(expected, actual)

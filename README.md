@@ -1,10 +1,10 @@
 # Winterfell 🐺
 
 <a href="https://github.com/novifinancial/winterfell/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
-<img src="https://github.com/novifinancial/winterfell/workflows/CI/badge.svg?branch=main">
+<a href="https://github.com/facebook/winterfell/actions/workflows/ci.yml"><img src="https://github.com/facebook/winterfell/actions/workflows/ci.yml/badge.svg">
 <a href="https://deps.rs/repo/github/novifinancial/winterfell"><img src="https://deps.rs/repo/github/novifinancial/winterfell/status.svg"></a>
-<img src="https://img.shields.io/badge/prover-rustc_1.67+-lightgray.svg">
-<img src="https://img.shields.io/badge/verifier-rustc_1.67+-lightgray.svg">
+<img src="https://img.shields.io/badge/prover-rustc_1.87+-lightgray.svg">
+<img src="https://img.shields.io/badge/verifier-rustc_1.87+-lightgray.svg">
 <a href="https://crates.io/crates/winterfell"><img src="https://img.shields.io/crates/v/winterfell"></a>
 
 A STARK prover and verifier for arbitrary computations.
@@ -15,7 +15,7 @@ A STARK prover and verifier for arbitrary computations.
 
 A STARK is a novel proof-of-computation scheme to create efficiently verifiable proofs of the correct execution of a computation. The scheme was developed by Eli Ben-Sasson, Michael Riabzev et al. at Technion - Israel Institute of Technology. STARKs do not require an initial trusted setup, and rely on very few cryptographic assumptions. See [references](#References) for more info.
 
-The aim of this project is to build a feature-rich, easy to use, and highly performant STARK prover which can generate integrity proofs for very large computations. STARK proof generation process is massively parallelizable, however, it also requires lots of RAM. For very large computations, amount of RAM available on a single machine may not be sufficient to efficiently generate a proof. Therefore, our final goal is to efficiently distribute proof generation across many machines.
+The aim of this project is to build a feature-rich, easy to use, and highly performant STARK prover which can generate integrity proofs for very large computations.
 
 ### Status and features
 
@@ -27,19 +27,18 @@ Winterfell is a fully-functional, multi-threaded STARK prover and verifier with 
 
 **Multi-threaded proof generation.** When compiled with `concurrent` feature enabled, the proof generation process will run in multiple threads. The library also supports concurrent construction of execution trace tables. The [performance](#Performance) section showcases the benefits of multi-threading.
 
-**Configurable fields.** Both the base and the extension field for proof generation can be chosen dynamically. This simplifies fine-tuning of proof generation for specific performance and security targets. See [math crate](math) for description of currently available fields.
-
-**Configurable hash functions.** The library allows dynamic selection of hash functions used in the STARK protocol. Currently, BLAKE3 and SHA3 hash functions are supported, and support for arithmetization-friendly hash function (e.g. Rescue) is planned.
+**Configurable fields and hash functions.** The library is generic over the selection of fields (both base field and extension field) and hash functions (including arithmetization-friendly hashes). This simplifies fine-tuning of proof generation for specific performance and security targets. Some options for both are provided in the [math](math) and [crypto](crypto) crates, but the library can work with any implementation that complies with the specified interfaces.
 
 **WebAssembly support.** The library is written in pure Rust and can be compiled to WebAssembly. The `std` standard library is enabled as feature by default for both prover and verifier crates. For WASM targets, one can compile with default features disabled by using `--no-default-features` flag.
+
+**Async prover.** The library supports both sync and async variants of the `Prover` trait. By default, the sync version is exported. The async version of the trait can be enabled via the `async` feature flag.
 
 #### Planned features
 
 Over time, we hope extend the library with additional features:
 
-**Distributed prover.** Distributed proof generation is the main priority of this project, and we hope to release an update containing it soon.
+**Perfect zero-knowledge.** The current implementation provides succinct proofs but NOT perfect zero-knowledge. This means that, in its current form, the library may not be suitable for use cases where proofs must not leak any info about secret inputs.
 
-**Perfect zero-knowledge.** The current implementation provides succinct proofs but NOT perfect zero-knowledge. This means that, in its current form, the library may not be suitable for use cases where proofs must not leak any info about secret inputs. 
 
 ### Project structure
 The project is organized into several crates like so:
@@ -132,7 +131,7 @@ For more information about arithmetization see [air crate](air#Arithmetization),
 ```Rust
 use winterfell::{
     math::{fields::f128::BaseElement, FieldElement, ToElements},
-    Air, AirContext, Assertion, ByteWriter, EvaluationFrame, ProofOptions, TraceInfo,
+    Air, AirContext, Assertion, EvaluationFrame, ProofOptions, TraceInfo,
     TransitionConstraintDegree,
 };
 
@@ -201,7 +200,7 @@ impl Air for WorkAir {
         result: &mut [E],
     ) {
         // First, we'll read the current state, and use it to compute the expected next state
-        let current_state = &frame.current()[0];
+        let current_state = frame.current()[0];
         let next_state = current_state.exp(3u32.into()) + E::from(42u32);
 
         // Then, we'll subtract the expected next state from the actual next state; this will
@@ -235,14 +234,20 @@ pretty simple and has just a few required methods. Here is how our implementatio
 like:
 ```Rust
 use winterfell::{
+    crypto::{hashers::Blake3_256, DefaultRandomCoin},
     math::{fields::f128::BaseElement, FieldElement},
-    ProofOptions, Prover, Trace, TraceTable
+    matrix::ColMatrix,
+    DefaultConstraintEvaluator, DefaultTraceLde, ProofOptions, Prover, StarkDomain, Trace,
+    TraceInfo, TracePolyTable, TraceTable,
 };
+
+// We'll use BLAKE3 as the hash function during proof generation.
+type Blake3 = Blake3_256<BaseElement>;
 
 // Our prover needs to hold STARK protocol parameters which are specified via ProofOptions
 // struct.
 struct WorkProver {
-    options: ProofOptions
+    options: ProofOptions,
 }
 
 impl WorkProver {
@@ -251,14 +256,21 @@ impl WorkProver {
     }
 }
 
-// When implementing Prover trait we set the `Air` associated type to the AIR of the
+// When implementing the Prover trait we set the `Air` associated type to the AIR of the
 // computation we defined previously, and set the `Trace` associated type to `TraceTable`
-// struct as we don't need to define a custom trace for our computation.
+// struct as we don't need to define a custom trace for our computation. For other
+// associated types, we'll use default implementation provided by Winterfell.
 impl Prover for WorkProver {
     type BaseField = BaseElement;
     type Air = WorkAir;
-    type Trace = TraceTable<Self::BaseField>;
-    type HashFn = Blake3_256<Self::BaseField>;
+    type Trace = TraceTable<BaseElement>;
+    type HashFn = Blake3;
+    type RandomCoin = DefaultRandomCoin<Blake3>;
+    type TraceLde<E: FieldElement<BaseField = BaseElement>> = DefaultTraceLde<E, Blake3>;
+    type ConstraintEvaluator<'a, E: FieldElement<BaseField = BaseElement>> =
+        DefaultConstraintEvaluator<'a, WorkAir, E>;
+    type ConstraintCommitment<E: FieldElement<BaseField = Self::BaseField>> =
+        DefaultConstraintCommitment<E, H, Self::VC>;
 
     // Our public inputs consist of the first and last value in the execution trace.
     fn get_pub_inputs(&self, trace: &Self::Trace) -> PublicInputs {
@@ -267,6 +279,42 @@ impl Prover for WorkProver {
             start: trace.get(0, 0),
             result: trace.get(0, last_step),
         }
+    }
+
+    // We'll use the default trace low-degree extension.
+    fn new_trace_lde<E: FieldElement<BaseField = Self::BaseField>>(
+        &self,
+        trace_info: &TraceInfo,
+        main_trace: &ColMatrix<Self::BaseField>,
+        domain: &StarkDomain<Self::BaseField>,
+    ) -> (Self::TraceLde<E>, TracePolyTable<E>) {
+        DefaultTraceLde::new(trace_info, main_trace, domain)
+    }
+
+    // We'll use the default constraint evaluator to evaluate AIR constraints.
+    fn new_evaluator<'a, E: FieldElement<BaseField = BaseElement>>(
+        &self,
+        air: &'a WorkAir,
+        aux_rand_elements: Option<Self::AuxRandElements<E>>,
+        composition_coefficients: winterfell::ConstraintCompositionCoefficients<E>,
+    ) -> Self::ConstraintEvaluator<'a, E> {
+        DefaultConstraintEvaluator::new(air, aux_rand_elements, composition_coefficients)
+    }
+
+    // We'll use the default constraint commitment.
+    fn build_constraint_commitment<E: FieldElement<BaseField = Self::BaseField>>(
+        &self,
+        composition_poly_trace: CompositionPolyTrace<E>,
+        num_constraint_composition_columns: usize,
+        domain: &StarkDomain<Self::BaseField>,
+        partition_options: PartitionOptions,
+    ) -> (Self::ConstraintCommitment<E>, CompositionPoly<E>) {
+        DefaultConstraintCommitment::new(
+            composition_poly_trace,
+            num_constraint_composition_columns,
+            domain,
+            partition_options,
+        )
     }
 
     fn options(&self) -> &ProofOptions {
@@ -280,10 +328,10 @@ Now, we are finally ready to generate a STARK proof. The function below, will ex
 ```Rust
 use winterfell::{
     math::{fields::f128::BaseElement, FieldElement},
-    FieldExtension, HashFunction, ProofOptions, StarkProof,
+    FieldExtension, HashFunction, ProofOptions, Proof,
 };
 
-pub fn prove_work() -> (BaseElement, StarkProof) {
+pub fn prove_work() -> (BaseElement, Proof) {
     // We'll just hard-code the parameters here for this example.
     let start = BaseElement::new(3);
     let n = 1_048_576;
@@ -299,7 +347,7 @@ pub fn prove_work() -> (BaseElement, StarkProof) {
         0,  // grinding factor
         FieldExtension::None,
         8,   // FRI folding factor
-        128, // FRI max remainder length
+        127, // FRI remainder max degree
     );
 
     // Instantiate the prover and generate the proof.
@@ -313,11 +361,23 @@ pub fn prove_work() -> (BaseElement, StarkProof) {
 We can then give this proof (together with the public inputs) to anyone, and they can verify that we did in fact execute the computation and got the claimed result. They can do this like so:
 
 ```Rust
-pub fn verify_work(start: BaseElement, result: BaseElement, proof: StarkProof) {
-    // The number of steps and options are encoded in the proof itself, so we
-    // don't need to pass them explicitly to the verifier.
+use winterfell::{
+    crypto::{hashers::Blake3_256, DefaultRandomCoin},
+    math::fields::f128::BaseElement,
+    verify, AcceptableOptions, Proof,
+};
+
+type Blake3 = Blake3_256<BaseElement>;
+
+pub fn verify_work(start: BaseElement, result: BaseElement, proof: Proof) {
+    // The verifier will accept proofs with parameters which guarantee 95 bits or more of
+    // conjectured security
+    let min_opts = AcceptableOptions::MinConjecturedSecurity(95);
+
+    // The number of steps and options are encoded in the proof itself, so we don't need to
+    // pass them explicitly to the verifier.
     let pub_inputs = PublicInputs { start, result };
-    match winterfell::verify::<WorkAir, Blake3_256<Self::BaseField>>(proof, pub_inputs) {
+    match verify::<WorkAir, Blake3, DefaultRandomCoin<Blake3>>(proof, pub_inputs, &min_opts) {
         Ok(_) => println!("yay! all good!"),
         Err(_) => panic!("something went terribly wrong!"),
     }
@@ -446,9 +506,9 @@ If you are interested in learning how STARKs work under the hood, here are a few
 * STARKs vs. SNARKs: [A Cambrian Explosion of Crypto Proofs](https://nakamoto.com/cambrian-explosion-of-crypto-proofs/)
 
 Vitalik Buterin's blog series on zk-STARKs:
-* [STARKs, part 1: Proofs with Polynomials](https://vitalik.ca/general/2017/11/09/starks_part_1.html)
-* [STARKs, part 2: Thank Goodness it's FRI-day](https://vitalik.ca/general/2017/11/22/starks_part_2.html)
-* [STARKs, part 3: Into the Weeds](https://vitalik.ca/general/2018/07/21/starks_part_3.html)
+* [STARKs, part 1: Proofs with Polynomials](https://vitalik.eth.limo/general/2017/11/09/starks_part_1.html)
+* [STARKs, part 2: Thank Goodness it's FRI-day](https://vitalik.eth.limo/general/2017/11/22/starks_part_2.html)
+* [STARKs, part 3: Into the Weeds](https://vitalik.eth.limo/general/2018/07/21/starks_part_3.html)
 
 Alan Szepieniec's STARK tutorial:
 * [Anatomy of a STARK](https://aszepieniec.github.io/stark-anatomy/)

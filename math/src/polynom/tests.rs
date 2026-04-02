@@ -3,21 +3,22 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
+use alloc::vec::Vec;
+
 use super::remove_leading_zeros;
 use crate::{
     field::{f128::BaseElement, FieldElement, StarkField},
-    utils::{get_power_series, log2},
+    utils::get_power_series,
 };
-use utils::collections::Vec;
 
 #[test]
 fn eval() {
-    let x = BaseElement::from(11269864713250585702u128);
+    let x = BaseElement::new(11269864713250585702u128);
     let poly: [BaseElement; 4] = [
-        BaseElement::from(384863712573444386u128),
-        BaseElement::from(7682273369345308472u128),
-        BaseElement::from(13294661765012277990u128),
-        BaseElement::from(16234810094004944758u128),
+        BaseElement::new(384863712573444386u128),
+        BaseElement::new(7682273369345308472u128),
+        BaseElement::new(13294661765012277990u128),
+        BaseElement::new(16234810094004944758u128),
     ];
 
     assert_eq!(BaseElement::ZERO, super::eval(&poly[..0], x));
@@ -30,38 +31,28 @@ fn eval() {
 
     // degree 2
     let x2 = x.exp(2);
-    assert_eq!(
-        poly[0] + poly[1] * x + poly[2] * x2,
-        super::eval(&poly[..3], x)
-    );
+    assert_eq!(poly[0] + poly[1] * x + poly[2] * x2, super::eval(&poly[..3], x));
 
     // degree 3
     let x3 = x.exp(3);
-    assert_eq!(
-        poly[0] + poly[1] * x + poly[2] * x2 + poly[3] * x3,
-        super::eval(&poly, x)
-    );
+    assert_eq!(poly[0] + poly[1] * x + poly[2] * x2 + poly[3] * x3, super::eval(&poly, x));
 }
 
 #[test]
 fn add() {
     let poly1: [BaseElement; 3] = [
-        BaseElement::from(384863712573444386u128),
-        BaseElement::from(7682273369345308472u128),
-        BaseElement::from(13294661765012277990u128),
+        BaseElement::new(384863712573444386u128),
+        BaseElement::new(7682273369345308472u128),
+        BaseElement::new(13294661765012277990u128),
     ];
     let poly2: [BaseElement; 3] = [
-        BaseElement::from(9918505539874556741u128),
-        BaseElement::from(16401861429499852246u128),
-        BaseElement::from(12181445947541805654u128),
+        BaseElement::new(9918505539874556741u128),
+        BaseElement::new(16401861429499852246u128),
+        BaseElement::new(12181445947541805654u128),
     ];
 
     // same degree
-    let pr = vec![
-        poly1[0] + poly2[0],
-        poly1[1] + poly2[1],
-        poly1[2] + poly2[2],
-    ];
+    let pr = vec![poly1[0] + poly2[0], poly1[1] + poly2[1], poly1[2] + poly2[2]];
     assert_eq!(pr, super::add(&poly1, &poly2));
 
     // poly1 is lower degree
@@ -76,22 +67,18 @@ fn add() {
 #[test]
 fn sub() {
     let poly1: [BaseElement; 3] = [
-        BaseElement::from(384863712573444386u128),
-        BaseElement::from(7682273369345308472u128),
-        BaseElement::from(13294661765012277990u128),
+        BaseElement::new(384863712573444386u128),
+        BaseElement::new(7682273369345308472u128),
+        BaseElement::new(13294661765012277990u128),
     ];
     let poly2: [BaseElement; 3] = [
-        BaseElement::from(9918505539874556741u128),
-        BaseElement::from(16401861429499852246u128),
-        BaseElement::from(12181445947541805654u128),
+        BaseElement::new(9918505539874556741u128),
+        BaseElement::new(16401861429499852246u128),
+        BaseElement::new(12181445947541805654u128),
     ];
 
     // same degree
-    let pr = vec![
-        poly1[0] - poly2[0],
-        poly1[1] - poly2[1],
-        poly1[2] - poly2[2],
-    ];
+    let pr = vec![poly1[0] - poly2[0], poly1[1] - poly2[1], poly1[2] - poly2[2]];
     assert_eq!(pr, super::sub(&poly1, &poly2));
 
     // poly1 is lower degree
@@ -106,14 +93,14 @@ fn sub() {
 #[test]
 fn mul() {
     let poly1: [BaseElement; 3] = [
-        BaseElement::from(384863712573444386u128),
-        BaseElement::from(7682273369345308472u128),
-        BaseElement::from(13294661765012277990u128),
+        BaseElement::new(384863712573444386u128),
+        BaseElement::new(7682273369345308472u128),
+        BaseElement::new(13294661765012277990u128),
     ];
     let poly2: [BaseElement; 3] = [
-        BaseElement::from(9918505539874556741u128),
-        BaseElement::from(16401861429499852246u128),
-        BaseElement::from(12181445947541805654u128),
+        BaseElement::new(9918505539874556741u128),
+        BaseElement::new(16401861429499852246u128),
+        BaseElement::new(12181445947541805654u128),
     ];
 
     // same degree
@@ -148,14 +135,14 @@ fn mul() {
 #[test]
 fn div() {
     let poly1 = vec![
-        BaseElement::from(384863712573444386u128),
-        BaseElement::from(7682273369345308472u128),
-        BaseElement::from(13294661765012277990u128),
+        BaseElement::new(384863712573444386u128),
+        BaseElement::new(7682273369345308472u128),
+        BaseElement::new(13294661765012277990u128),
     ];
     let poly2 = vec![
-        BaseElement::from(9918505539874556741u128),
-        BaseElement::from(16401861429499852246u128),
-        BaseElement::from(12181445947541805654u128),
+        BaseElement::new(9918505539874556741u128),
+        BaseElement::new(16401861429499852246u128),
+        BaseElement::new(12181445947541805654u128),
     ];
 
     // divide degree 4 by degree 2
@@ -167,11 +154,8 @@ fn div() {
     assert_eq!(poly1[..2].to_vec(), super::div(&poly3, &poly2));
 
     // divide degree 3 by degree 3
-    let poly3 = super::mul_by_scalar(&poly1, BaseElement::from(11269864713250585702u128));
-    assert_eq!(
-        vec![BaseElement::from(11269864713250585702u128)],
-        super::div(&poly3, &poly1)
-    );
+    let poly3 = super::mul_by_scalar(&poly1, BaseElement::new(11269864713250585702u128));
+    assert_eq!(vec![BaseElement::new(11269864713250585702u128)], super::div(&poly3, &poly1));
 }
 
 #[test]
@@ -199,11 +183,7 @@ fn syn_div() {
 
     // divide by (x - 3), this does not divide evenly, but the remainder is ignored
     let result = super::syn_div(&poly, 1, BaseElement::from(3u8));
-    let expected = vec![
-        -BaseElement::from(27u8),
-        -BaseElement::from(9u8),
-        BaseElement::ONE,
-    ];
+    let expected = vec![-BaseElement::from(27u8), -BaseElement::from(9u8), BaseElement::ONE];
     assert_eq!(expected, remove_leading_zeros(&result));
 
     // ----- division by high-degree polynomial ---------------------------------------------------
@@ -215,7 +195,7 @@ fn syn_div() {
         .collect();
 
     // build the domain
-    let root = BaseElement::get_root_of_unity(log2(ys.len()));
+    let root = BaseElement::get_root_of_unity(ys.len().ilog2());
     let domain = get_power_series(root, ys.len());
 
     // build the polynomial

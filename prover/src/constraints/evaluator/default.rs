@@ -3,19 +3,19 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
-use super::{
-    super::TraceLde, evaluation_table::EvaluationTableFragment, BoundaryConstraints,
-    ConstraintEvaluationTable, PeriodicValueTable, StarkDomain,
-};
 use air::{
-    Air, AuxTraceRandElements, ConstraintCompositionCoefficients, EvaluationFrame,
-    TransitionConstraints,
+    Air, AuxRandElements, ConstraintCompositionCoefficients, EvaluationFrame, TransitionConstraints,
 };
 use math::FieldElement;
+use tracing::instrument;
 use utils::iter_mut;
-
 #[cfg(feature = "concurrent")]
 use utils::{iterators::*, rayon};
+
+use super::{
+    super::EvaluationTableFragment, BoundaryConstraints, CompositionPolyTrace,
+    ConstraintEvaluationTable, ConstraintEvaluator, PeriodicValueTable, StarkDomain, TraceLde,
+};
 
 // CONSTANTS
 // ================================================================================================
@@ -23,59 +23,45 @@ use utils::{iterators::*, rayon};
 #[cfg(feature = "concurrent")]
 const MIN_CONCURRENT_DOMAIN_SIZE: usize = 8192;
 
-// CONSTRAINT EVALUATOR
+// DEFAULT CONSTRAINT EVALUATOR
 // ================================================================================================
 
-pub struct ConstraintEvaluator<'a, A: Air, E: FieldElement<BaseField = A::BaseField>> {
+/// Default implementation of the [ConstraintEvaluator] trait.
+///
+/// This implementation iterates over all evaluation frames of an extended execution trace and
+/// evaluates constraints over these frames one-by-one. Constraint evaluations are merged together
+/// using random linear combinations and in the end, only a single column is returned.
+///
+/// When `concurrent` feature is enabled, the extended execution trace is split into sets of
+/// sequential evaluation frames (called fragments), and frames in each fragment are evaluated
+/// in separate threads.
+pub struct DefaultConstraintEvaluator<'a, A: Air, E: FieldElement<BaseField = A::BaseField>> {
     air: &'a A,
     boundary_constraints: BoundaryConstraints<E>,
     transition_constraints: TransitionConstraints<E>,
-    aux_rand_elements: AuxTraceRandElements<E>,
+    aux_rand_elements: Option<AuxRandElements<E>>,
     periodic_values: PeriodicValueTable<E::BaseField>,
 }
 
-impl<'a, A: Air, E: FieldElement<BaseField = A::BaseField>> ConstraintEvaluator<'a, A, E> {
-    // CONSTRUCTOR
-    // --------------------------------------------------------------------------------------------
-    /// Returns a new evaluator which can be used to evaluate transition and boundary constraints
-    /// over extended execution trace.
-    pub fn new(
-        air: &'a A,
-        aux_rand_elements: AuxTraceRandElements<E>,
-        composition_coefficients: ConstraintCompositionCoefficients<E>,
-    ) -> Self {
-        // build transition constraint groups; these will be used to compose transition constraint
-        // evaluations
-        let transition_constraints =
-            air.get_transition_constraints(&composition_coefficients.transition);
+impl<A, E> ConstraintEvaluator<E> for DefaultConstraintEvaluator<'_, A, E>
+where
+    A: Air,
+    E: FieldElement<BaseField = A::BaseField>,
+{
+    type Air = A;
 
-        // build periodic value table
-        let periodic_values = PeriodicValueTable::new(air);
-
-        // build boundary constraint groups; these will be used to evaluate and compose boundary
-        // constraint evaluations.
-        let boundary_constraints =
-            BoundaryConstraints::new(air, &aux_rand_elements, &composition_coefficients.boundary);
-
-        ConstraintEvaluator {
-            air,
-            boundary_constraints,
-            transition_constraints,
-            aux_rand_elements,
-            periodic_values,
-        }
-    }
-
-    // EVALUATOR
-    // --------------------------------------------------------------------------------------------
-    /// Evaluates constraints against the provided extended execution trace. Constraints are
-    /// evaluated over a constraint evaluation domain. This is an optimization because constraint
-    /// evaluation domain can be many times smaller than the full LDE domain.
-    pub fn evaluate(
+    #[instrument(
+        skip_all,
+        name = "evaluate_constraints",
+        fields(
+            ce_domain_size = %domain.ce_domain_size()
+        )
+    )]
+    fn evaluate<T: TraceLde<E>>(
         self,
-        trace: &TraceLde<E>,
-        domain: &'a StarkDomain<E::BaseField>,
-    ) -> ConstraintEvaluationTable<'a, E> {
+        trace: &T,
+        domain: &StarkDomain<<E as FieldElement>::BaseField>,
+    ) -> CompositionPolyTrace<E> {
         assert_eq!(
             trace.trace_len(),
             domain.lde_domain_size(),
@@ -128,7 +114,46 @@ impl<'a, A: Air, E: FieldElement<BaseField = A::BaseField>> ConstraintEvaluator<
         #[cfg(debug_assertions)]
         evaluation_table.validate_transition_degrees();
 
-        evaluation_table
+        CompositionPolyTrace::new(evaluation_table.combine())
+    }
+}
+
+impl<'a, A, E> DefaultConstraintEvaluator<'a, A, E>
+where
+    A: Air,
+    E: FieldElement<BaseField = A::BaseField>,
+{
+    // CONSTRUCTOR
+    // --------------------------------------------------------------------------------------------
+    /// Returns a new evaluator which can be used to evaluate transition and boundary constraints
+    /// over extended execution trace.
+    pub fn new(
+        air: &'a A,
+        aux_rand_elements: Option<AuxRandElements<E>>,
+        composition_coefficients: ConstraintCompositionCoefficients<E>,
+    ) -> Self {
+        // build transition constraint groups; these will be used to compose transition constraint
+        // evaluations
+        let transition_constraints =
+            air.get_transition_constraints(&composition_coefficients.transition);
+        // build periodic value table
+        let periodic_values = PeriodicValueTable::new(air);
+
+        // build boundary constraint groups; these will be used to evaluate and compose boundary
+        // constraint evaluations.
+        let boundary_constraints = BoundaryConstraints::new(
+            air,
+            aux_rand_elements.as_ref(),
+            &composition_coefficients.boundary,
+        );
+
+        DefaultConstraintEvaluator {
+            air,
+            boundary_constraints,
+            transition_constraints,
+            aux_rand_elements,
+            periodic_values,
+        }
     }
 
     // EVALUATION HELPERS
@@ -137,14 +162,14 @@ impl<'a, A: Air, E: FieldElement<BaseField = A::BaseField>> ConstraintEvaluator<
     /// Evaluates constraints for a single fragment of the evaluation table.
     ///
     /// This evaluates constraints only over the main segment of the execution trace.
-    fn evaluate_fragment_main(
+    fn evaluate_fragment_main<T: TraceLde<E>>(
         &self,
-        trace: &TraceLde<E>,
+        trace: &T,
         domain: &StarkDomain<A::BaseField>,
         fragment: &mut EvaluationTableFragment<E>,
     ) {
         // initialize buffers to hold trace values and evaluation results at each step;
-        let mut main_frame = EvaluationFrame::new(trace.main_trace_width());
+        let mut main_frame = EvaluationFrame::new(trace.trace_info().main_trace_width());
         let mut evaluations = vec![E::ZERO; fragment.num_columns()];
         let mut t_evaluations = vec![E::BaseField::ZERO; self.num_main_transition_constraints()];
 
@@ -163,8 +188,7 @@ impl<'a, A: Air, E: FieldElement<BaseField = A::BaseField>> ConstraintEvaluator<
 
             // evaluate transition constraints and save the merged result the first slot of the
             // evaluations buffer
-            evaluations[0] =
-                self.evaluate_main_transition(&main_frame, domain, step, &mut t_evaluations);
+            evaluations[0] = self.evaluate_main_transition(&main_frame, step, &mut t_evaluations);
 
             // when in debug mode, save transition constraint evaluations
             #[cfg(debug_assertions)]
@@ -189,15 +213,15 @@ impl<'a, A: Air, E: FieldElement<BaseField = A::BaseField>> ConstraintEvaluator<
     ///
     /// This evaluates constraints only over all segments of the execution trace (i.e. main segment
     /// and all auxiliary segments).
-    fn evaluate_fragment_full(
+    fn evaluate_fragment_full<T: TraceLde<E>>(
         &self,
-        trace: &TraceLde<E>,
+        trace: &T,
         domain: &StarkDomain<A::BaseField>,
         fragment: &mut EvaluationTableFragment<E>,
     ) {
         // initialize buffers to hold trace values and evaluation results at each step
-        let mut main_frame = EvaluationFrame::new(trace.main_trace_width());
-        let mut aux_frame = EvaluationFrame::new(trace.aux_trace_width());
+        let mut main_frame = EvaluationFrame::new(trace.trace_info().main_trace_width());
+        let mut aux_frame = EvaluationFrame::new(trace.trace_info().aux_segment_width());
         let mut tm_evaluations = vec![E::BaseField::ZERO; self.num_main_transition_constraints()];
         let mut ta_evaluations = vec![E::ZERO; self.num_aux_transition_constraints()];
         let mut evaluations = vec![E::ZERO; fragment.num_columns()];
@@ -216,15 +240,10 @@ impl<'a, A: Air, E: FieldElement<BaseField = A::BaseField>> ConstraintEvaluator<
             // evaluate transition constraints and save the merged result the first slot of the
             // evaluations buffer; we evaluate and compose constraints in the same function, we
             // can just add up the results of evaluating main and auxiliary constraints.
-            evaluations[0] =
-                self.evaluate_main_transition(&main_frame, domain, step, &mut tm_evaluations);
-            evaluations[0] += self.evaluate_aux_transition(
-                &main_frame,
-                &aux_frame,
-                domain,
-                step,
-                &mut ta_evaluations,
-            );
+            evaluations[0] = self.evaluate_main_transition(&main_frame, step, &mut tm_evaluations);
+
+            evaluations[0] +=
+                self.evaluate_aux_transition(&main_frame, &aux_frame, step, &mut ta_evaluations);
 
             // when in debug mode, save transition constraint evaluations
             #[cfg(debug_assertions)]
@@ -255,11 +274,9 @@ impl<'a, A: Air, E: FieldElement<BaseField = A::BaseField>> ConstraintEvaluator<
     ///
     /// `x` is the corresponding domain value at the specified step. That is, x = s * g^step,
     /// where g is the generator of the constraint evaluation domain, and s is the domain offset.
-    #[rustfmt::skip]
     fn evaluate_main_transition(
         &self,
         main_frame: &EvaluationFrame<E::BaseField>,
-        domain: &StarkDomain<A::BaseField>,
         step: usize,
         evaluations: &mut [E::BaseField],
     ) -> E {
@@ -275,24 +292,21 @@ impl<'a, A: Air, E: FieldElement<BaseField = A::BaseField>> ConstraintEvaluator<
 
         // merge transition constraint evaluations into a single value and return it;
         // we can do this here because all transition constraints have the same divisor.
-        self.transition_constraints.main_constraints().iter().fold(E::ZERO, |result, group| {
-            let (power, offset_exp) = (group.degree_adjustment(), group.domain_offset_exp());
-            let xp = domain.get_ce_x_power_at(step, power, offset_exp);
-            result + group.merge_evaluations(evaluations, xp)
-        })
+        evaluations
+            .iter()
+            .zip(self.transition_constraints.main_constraint_coef().iter())
+            .fold(E::ZERO, |acc, (&const_eval, &coef)| acc + coef.mul_base(const_eval))
     }
 
-    /// Evaluates all transition constraints (i.e., for main and auxiliary trace segments) at the
+    /// Evaluates all transition constraints (i.e., for main and the auxiliary trace segment) at the
     /// specified step of the constraint evaluation domain.
     ///
     /// `x` is the corresponding domain value at the specified step. That is, x = s * g^step,
     /// where g is the generator of the constraint evaluation domain, and s is the domain offset.
-    #[rustfmt::skip]
     fn evaluate_aux_transition(
         &self,
         main_frame: &EvaluationFrame<E::BaseField>,
         aux_frame: &EvaluationFrame<E>,
-        domain: &StarkDomain<A::BaseField>,
         step: usize,
         evaluations: &mut [E],
     ) -> E {
@@ -302,23 +316,24 @@ impl<'a, A: Air, E: FieldElement<BaseField = A::BaseField>> ConstraintEvaluator<
         // get periodic values at the evaluation step
         let periodic_values = self.periodic_values.get_row(step);
 
-        // evaluate transition constraints over auxiliary trace segments and save the results into
-        // evaluations buffer
+        // evaluate transition constraints over the auxiliary trace segment and save the results
+        // into evaluations buffer
         self.air.evaluate_aux_transition(
             main_frame,
             aux_frame,
             periodic_values,
-            &self.aux_rand_elements,
+            self.aux_rand_elements
+                .as_ref()
+                .expect("expected aux rand elements to be present"),
             evaluations,
         );
 
         // merge transition constraint evaluations into a single value and return it;
         // we can do this here because all transition constraints have the same divisor.
-        self.transition_constraints.aux_constraints().iter().fold(E::ZERO, |result, group| {
-            let (power, offset_exp) = (group.degree_adjustment(), group.domain_offset_exp());
-            let xp = domain.get_ce_x_power_at(step, power, offset_exp);
-            result + group.merge_evaluations::<E::BaseField, E>(evaluations, xp)
-        })
+        evaluations
+            .iter()
+            .zip(self.transition_constraints.aux_constraint_coef().iter())
+            .fold(E::ZERO, |acc, (&const_eval, &coef)| acc + coef * const_eval)
     }
 
     // ACCESSORS
@@ -330,7 +345,7 @@ impl<'a, A: Air, E: FieldElement<BaseField = A::BaseField>> ConstraintEvaluator<
         self.transition_constraints.num_main_constraints()
     }
 
-    /// Returns the number of transition constraints applied against all auxiliary trace segments.
+    /// Returns the number of transition constraints applied against the auxiliary trace segment.
     fn num_aux_transition_constraints(&self) -> usize {
         self.transition_constraints.num_aux_constraints()
     }

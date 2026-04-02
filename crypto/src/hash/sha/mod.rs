@@ -3,11 +3,13 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
-use super::{ByteDigest, ElementHasher, Hasher};
 use core::marker::PhantomData;
+
 use math::{FieldElement, StarkField};
 use sha3::Digest;
 use utils::ByteWriter;
+
+use super::{ByteDigest, ElementHasher, Hasher};
 
 // SHA3 WITH 256-BIT OUTPUT
 // ================================================================================================
@@ -26,6 +28,10 @@ impl<B: StarkField> Hasher for Sha3_256<B> {
     }
 
     fn merge(values: &[Self::Digest; 2]) -> Self::Digest {
+        ByteDigest(sha3::Sha3_256::digest(ByteDigest::digests_as_bytes(values)).into())
+    }
+
+    fn merge_many(values: &[Self::Digest]) -> Self::Digest {
         ByteDigest(sha3::Sha3_256::digest(ByteDigest::digests_as_bytes(values)).into())
     }
 
@@ -50,7 +56,7 @@ impl<B: StarkField> ElementHasher for Sha3_256<B> {
             // when elements' internal and canonical representations differ, we need to serialize
             // them before hashing
             let mut hasher = ShaHasher::new();
-            hasher.write(elements);
+            hasher.write_many(elements);
             ByteDigest(hasher.finalize())
         }
     }

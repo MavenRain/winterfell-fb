@@ -5,8 +5,8 @@
 
 //! Contains common error types for prover and verifier.
 
+use alloc::string::String;
 use core::fmt;
-use utils::string::String;
 
 // VERIFIER ERROR
 // ================================================================================================
@@ -27,11 +27,10 @@ pub enum VerifierError {
     /// This error occurs when constraints evaluated over out-of-domain trace rows do not match
     /// evaluations of the constraint composition polynomial at the out-of-domain point.
     InconsistentOodConstraintEvaluations,
-    /// This error occurs when Merkle authentication paths of trace queries do not resolve to the
-    /// execution trace commitment included in the proof.
+    /// This error occurs when the batch opening proof fails to verify for trace queries.
     TraceQueryDoesNotMatchCommitment,
-    /// This error occurs when Merkle authentication paths of constraint evaluation queries do not
-    /// resolve to the constraint evaluation commitment included in the proof.
+    /// This error occurs when the batch opening proof fails to verify for constraint evaluation
+    /// queries.
     ConstraintQueryDoesNotMatchCommitment,
     /// This error occurs when the proof-of-work nonce hashed with the current state of the public
     /// coin resolves to a value which does not meet the proof-of-work threshold specified by the
@@ -41,6 +40,17 @@ pub enum VerifierError {
     /// constraint evaluation queries do not represent a polynomial of the degree expected by the
     /// verifier.
     FriVerificationFailed(fri::VerifierError),
+    /// This error occurs when the parameters, that were used to generate the proof, do not provide
+    /// a conjectured security level greater than or equal to the conjectured security level
+    /// expected by the verifier.
+    InsufficientConjecturedSecurity(u32, u32),
+    /// This error occurs when the parameters, that were used to generate the proof, do not provide
+    /// a proven security level greater than or equal to the proven security level expected by
+    /// the verifier.
+    InsufficientProvenSecurity(u32, u32),
+    /// This error occurs when the parameters, that were used to generate the proof, do not match
+    /// any of the set of parameters expected by the verifier.
+    UnacceptableProofOptions,
 }
 
 impl fmt::Display for VerifierError {
@@ -63,10 +73,10 @@ impl fmt::Display for VerifierError {
                 write!(f, "constraint evaluations over the out-of-domain frame are inconsistent")
             }
             Self::TraceQueryDoesNotMatchCommitment => {
-                write!(f, "trace query did not match the commitment")
+                write!(f, "failed to open trace query against the given commitment")
             }
             Self::ConstraintQueryDoesNotMatchCommitment => {
-                write!(f, "constraint query did not match the commitment")
+                write!(f, "failed to open constraint query against the given commitment")
             }
             Self::QuerySeedProofOfWorkVerificationFailed => {
                 write!(f, "query seed proof-of-work verification failed")
@@ -74,6 +84,15 @@ impl fmt::Display for VerifierError {
             Self::FriVerificationFailed(err) => {
                 write!(f, "verification of low-degree proof failed: {err}")
             }
+            Self::InsufficientConjecturedSecurity(minimal_security, proof_security)=> {
+                write!(f, "insufficient proof security level: expected at least {minimal_security} bits of conjectured security, but was {proof_security} bits")
+            }
+            Self::InsufficientProvenSecurity(minimal_security, proof_security)=> {
+                write!(f, "insufficient proof security level: expected at least {minimal_security} bits of proven security, but was {proof_security} bits")
+            }
+            Self::UnacceptableProofOptions => {write!(f, "invalid proof options: security parameters do not match the acceptable parameter set")}
         }
     }
 }
+
+impl core::error::Error for VerifierError {}

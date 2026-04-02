@@ -3,16 +3,17 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
+use core_utils::flatten_slice_elements;
+use winterfell::{
+    math::ToElements, Air, AirContext, Assertion, AuxRandElements, EvaluationFrame, TraceInfo,
+    TransitionConstraintDegree,
+};
+
 use super::{
     rescue::{self, STATE_WIDTH},
     BaseElement, ExtensionOf, FieldElement, ProofOptions, CYCLE_LENGTH, TRACE_WIDTH,
 };
 use crate::utils::{are_equal, not, EvaluationResult};
-use core_utils::flatten_slice_elements;
-use winterfell::{
-    math::ToElements, Air, AirContext, Assertion, AuxTraceRandElements, EvaluationFrame, TraceInfo,
-    TransitionConstraintDegree,
-};
 
 // CONSTANTS
 // ================================================================================================
@@ -158,7 +159,7 @@ impl Air for RescueRapsAir {
         main_frame: &EvaluationFrame<F>,
         aux_frame: &EvaluationFrame<E>,
         periodic_values: &[F],
-        aux_rand_elements: &AuxTraceRandElements<E>,
+        aux_rand_elements: &AuxRandElements<E>,
         result: &mut [E],
     ) where
         F: FieldElement<BaseField = Self::BaseField>,
@@ -170,7 +171,7 @@ impl Air for RescueRapsAir {
         let aux_current = aux_frame.current();
         let aux_next = aux_frame.next();
 
-        let random_elements = aux_rand_elements.get_segment_elements(0);
+        let aux_rand_elements = aux_rand_elements.rand_elements();
 
         let absorption_flag = periodic_values[1];
 
@@ -192,31 +193,24 @@ impl Air for RescueRapsAir {
         // auxiliary one. For the sake of illustrating RAPs behaviour, we will store
         // the computed values in additional columns.
 
-        let copied_value_1 = random_elements[0] * (main_next[0] - main_current[0]).into()
-            + random_elements[1] * (main_next[1] - main_current[1]).into();
+        let copied_value_1 = aux_rand_elements[0] * (main_next[0] - main_current[0]).into()
+            + aux_rand_elements[1] * (main_next[1] - main_current[1]).into();
 
-        result.agg_constraint(
-            0,
-            absorption_flag.into(),
-            are_equal(aux_current[0], copied_value_1),
-        );
+        result.agg_constraint(0, absorption_flag.into(), are_equal(aux_current[0], copied_value_1));
 
-        let copied_value_2 = random_elements[0] * (main_next[4] - main_current[4]).into()
-            + random_elements[1] * (main_next[5] - main_current[5]).into();
+        let copied_value_2 = aux_rand_elements[0] * (main_next[4] - main_current[4]).into()
+            + aux_rand_elements[1] * (main_next[5] - main_current[5]).into();
 
-        result.agg_constraint(
-            1,
-            absorption_flag.into(),
-            are_equal(aux_current[1], copied_value_2),
-        );
+        result.agg_constraint(1, absorption_flag.into(), are_equal(aux_current[1], copied_value_2));
 
-        // Enforce that the permutation argument column scales at each step by (aux[0] + γ) / (aux[1] + γ).
+        // Enforce that the permutation argument column scales at each step by (aux[0] + γ) /
+        // (aux[1] + γ).
         result.agg_constraint(
             2,
             E::ONE,
             are_equal(
-                aux_next[2] * (aux_current[1] + random_elements[2]),
-                aux_current[2] * (aux_current[0] + random_elements[2]),
+                aux_next[2] * (aux_current[1] + aux_rand_elements[2]),
+                aux_current[2] * (aux_current[0] + aux_rand_elements[2]),
             ),
         );
     }
@@ -239,15 +233,12 @@ impl Air for RescueRapsAir {
         ]
     }
 
-    fn get_aux_assertions<E: FieldElement + From<Self::BaseField>>(
-        &self,
-        _aux_rand_elements: &AuxTraceRandElements<E>,
-    ) -> Vec<Assertion<E>> {
+    fn get_aux_assertions<E>(&self, _aux_rand_elements: &AuxRandElements<E>) -> Vec<Assertion<E>>
+    where
+        E: FieldElement<BaseField = Self::BaseField>,
+    {
         let last_step = self.trace_length() - 1;
-        vec![
-            Assertion::single(2, 0, E::ONE),
-            Assertion::single(2, last_step, E::ONE),
-        ]
+        vec![Assertion::single(2, 0, E::ONE), Assertion::single(2, last_step, E::ONE)]
     }
 
     fn get_periodic_column_values(&self) -> Vec<Vec<Self::BaseField>> {
@@ -267,9 +258,9 @@ impl Air for RescueRapsAir {
 
 /// when flag = 1, enforces that the next state of the computation is defined like so:
 /// - the first two registers are equal to the values from the previous step
-/// - the other two registers are not restrained, they could be arbitrary elements,
-///   until the RAP columns enforces that they are a permutation of the two final registers
-///   of the other parallel chain
+/// - the other two registers are not restrained, they could be arbitrary elements, until the RAP
+///   columns enforces that they are a permutation of the two final registers of the other parallel
+///   chain
 fn enforce_hash_copy<E: FieldElement>(result: &mut [E], current: &[E], next: &[E], flag: E) {
     result.agg_constraint(0, flag, are_equal(current[0], next[0]));
     result.agg_constraint(1, flag, are_equal(current[1], next[1]));

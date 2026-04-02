@@ -3,13 +3,13 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
-use super::rescue::Rescue128;
+use std::cmp::Ordering;
+
+use core_utils::Serializable;
 use rand_utils::prng_vector;
-use std::{cmp::Ordering, convert::TryInto};
-use winterfell::{
-    math::{fields::f128::BaseElement, FieldElement, StarkField},
-    Serializable,
-};
+use winterfell::math::{fields::f128::BaseElement, FieldElement, StarkField};
+
+use super::rescue::Rescue128;
 
 // CONSTANTS
 // ================================================================================================
@@ -55,11 +55,7 @@ impl PrivateKey {
 
         let pub_key_hash = hash_pub_keys(&pub_keys);
 
-        PrivateKey {
-            sec_keys,
-            pub_keys,
-            pub_key_hash,
-        }
+        PrivateKey { sec_keys, pub_keys, pub_key_hash }
     }
 
     /// Returns a public key corresponding to this private key.
@@ -187,7 +183,7 @@ pub fn message_to_elements(message: &[u8]) -> [BaseElement; 2] {
     let checksum = m0.count_zeros() + m1.count_zeros();
     let m1 = m1 | ((checksum as u128) << 119);
 
-    [BaseElement::from(m0), BaseElement::from(m1)]
+    [BaseElement::new(m0), BaseElement::new(m1)]
 }
 
 /// Reduces a list of public key elements to a single 32-byte value. The reduction is done

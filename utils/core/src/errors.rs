@@ -3,14 +3,14 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
-use crate::string::String;
+use alloc::string::String;
 use core::fmt;
 
 // DESERIALIZATION ERROR
 // ================================================================================================
 
 /// Defines errors which can occur during deserialization.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeserializationError {
     /// Bytes in the input do not represent a valid value.
     InvalidValue(String),
@@ -25,24 +25,17 @@ pub enum DeserializationError {
 }
 
 impl fmt::Display for DeserializationError {
-    #[rustfmt::skip]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidValue(err_msg) => {
-                write!(f, "{err_msg}")
-            }
-            Self::UnexpectedEOF => {
-                write!(f, "unexpected EOF")
-            }
-            Self::UnconsumedBytes => {
-                write!(f, "not all bytes were consumed")
-            }
+            Self::InvalidValue(err_msg) => write!(f, "{err_msg}"),
+            Self::UnexpectedEOF => write!(f, "unexpected EOF"),
+            Self::UnconsumedBytes => write!(f, "not all bytes were consumed"),
             Self::TooManyElements(num) => {
                 write!(f, "could not allocate memory for {num} elements")
             }
-            Self::UnknownError(err_msg) => {
-                write!(f, "unknown error: {err_msg}")
-            }
+            Self::UnknownError(err_msg) => write!(f, "unknown error: {err_msg}"),
         }
     }
 }
+
+impl core::error::Error for DeserializationError {}

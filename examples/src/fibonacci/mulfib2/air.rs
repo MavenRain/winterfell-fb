@@ -3,17 +3,17 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
-use crate::utils::are_equal;
 use winterfell::{
     math::{fields::f128::BaseElement, FieldElement},
     Air, AirContext, Assertion, EvaluationFrame, ProofOptions, TraceInfo,
     TransitionConstraintDegree,
 };
 
+use super::TRACE_WIDTH;
+use crate::utils::are_equal;
+
 // FIBONACCI AIR
 // ================================================================================================
-
-const TRACE_WIDTH: usize = 2;
 
 pub struct MulFib2Air {
     context: AirContext<BaseElement>,
@@ -27,10 +27,7 @@ impl Air for MulFib2Air {
     // CONSTRUCTOR
     // --------------------------------------------------------------------------------------------
     fn new(trace_info: TraceInfo, pub_inputs: Self::BaseField, options: ProofOptions) -> Self {
-        let degrees = vec![
-            TransitionConstraintDegree::new(2),
-            TransitionConstraintDegree::new(2),
-        ];
+        let degrees = vec![TransitionConstraintDegree::new(2), TransitionConstraintDegree::new(2)];
         assert_eq!(TRACE_WIDTH, trace_info.width());
         MulFib2Air {
             context: AirContext::new(trace_info, degrees, 3, options),

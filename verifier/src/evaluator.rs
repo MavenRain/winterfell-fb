@@ -3,9 +3,10 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
-use air::{Air, AuxTraceRandElements, ConstraintCompositionCoefficients, EvaluationFrame};
+use alloc::vec::Vec;
+
+use air::{Air, AuxRandElements, ConstraintCompositionCoefficients, EvaluationFrame};
 use math::{polynom, FieldElement};
-use utils::collections::Vec;
 
 // CONSTRAINT EVALUATION
 // ================================================================================================
@@ -16,7 +17,7 @@ pub fn evaluate_constraints<A: Air, E: FieldElement<BaseField = A::BaseField>>(
     composition_coefficients: ConstraintCompositionCoefficients<E>,
     main_trace_frame: &EvaluationFrame<E>,
     aux_trace_frame: &Option<EvaluationFrame<E>>,
-    aux_rand_elements: AuxTraceRandElements<E>,
+    aux_rand_elements: Option<&AuxRandElements<E>>,
     x: E,
 ) -> E {
     // 1 ----- evaluate transition constraints ----------------------------------------------------
@@ -36,17 +37,20 @@ pub fn evaluate_constraints<A: Air, E: FieldElement<BaseField = A::BaseField>>(
         .collect::<Vec<_>>();
 
     // evaluate transition constraints for the main trace segment
-    let mut t_evaluations1 = E::zeroed_vector(t_constraints.num_main_constraints());
+    let mut t_evaluations1 = vec![E::ZERO; t_constraints.num_main_constraints()];
     air.evaluate_transition(main_trace_frame, &periodic_values, &mut t_evaluations1);
 
-    // evaluate transition constraints for auxiliary trace segments (if any)
-    let mut t_evaluations2 = E::zeroed_vector(t_constraints.num_aux_constraints());
+    // evaluate transition constraints for the auxiliary trace segment (if any)
+    let mut t_evaluations2 = vec![E::ZERO; t_constraints.num_aux_constraints()];
     if let Some(aux_trace_frame) = aux_trace_frame {
+        let aux_rand_elements =
+            aux_rand_elements.expect("expected aux rand elements to be present");
+
         air.evaluate_aux_transition(
             main_trace_frame,
             aux_trace_frame,
             &periodic_values,
-            &aux_rand_elements,
+            aux_rand_elements,
             &mut t_evaluations2,
         );
     }
@@ -60,39 +64,21 @@ pub fn evaluate_constraints<A: Air, E: FieldElement<BaseField = A::BaseField>>(
 
     // get boundary constraints grouped by common divisor from the AIR
     let b_constraints =
-        air.get_boundary_constraints(&aux_rand_elements, &composition_coefficients.boundary);
-
-    // cache power of x here so that we only re-compute it when degree_adjustment changes
-    let mut degree_adjustment = b_constraints.main_constraints()[0].degree_adjustment();
-    let mut xp = x.exp_vartime(degree_adjustment.into());
+        air.get_boundary_constraints(aux_rand_elements, &composition_coefficients.boundary);
 
     // iterate over boundary constraint groups for the main trace segment (each group has a
     // distinct divisor), evaluate constraints in each group and add their combination to the
     // result
     for group in b_constraints.main_constraints().iter() {
-        // if adjustment degree hasn't changed, no need to recompute `xp` - so just reuse the
-        // previous value; otherwise, compute new `xp`
-        if group.degree_adjustment() != degree_adjustment {
-            degree_adjustment = group.degree_adjustment();
-            xp = x.exp_vartime(degree_adjustment.into());
-        }
-        // evaluate all constraints in the group, and add the evaluation to the result
-        result += group.evaluate_at(main_trace_frame.current(), x, xp);
+        result += group.evaluate_at(main_trace_frame.current(), x);
     }
 
-    // iterate over boundary constraint groups for auxiliary trace segments (each group has a
+    // iterate over boundary constraint groups for the auxiliary trace segment (each group has a
     // distinct divisor), evaluate constraints in each group and add their combination to the
     // result
     if let Some(aux_trace_frame) = aux_trace_frame {
         for group in b_constraints.aux_constraints().iter() {
-            // if adjustment degree hasn't changed, no need to recompute `xp` - so just reuse the
-            // previous value; otherwise, compute new `xp`
-            if group.degree_adjustment() != degree_adjustment {
-                degree_adjustment = group.degree_adjustment();
-                xp = x.exp_vartime(degree_adjustment.into());
-            }
-            // evaluate all constraints in the group, and add the evaluation to the result
-            result += group.evaluate_at(aux_trace_frame.current(), x, xp);
+            result += group.evaluate_at(aux_trace_frame.current(), x);
         }
     }
 

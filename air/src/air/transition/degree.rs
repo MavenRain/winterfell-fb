@@ -3,8 +3,10 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
-use super::{super::super::ProofOptions, Vec, MIN_CYCLE_LENGTH};
+use alloc::vec::Vec;
 use core::cmp;
+
+use super::{super::super::ProofOptions, MIN_CYCLE_LENGTH};
 
 // TRANSITION CONSTRAINT DEGREE
 // ================================================================================================
@@ -32,14 +34,8 @@ impl TransitionConstraintDegree {
     /// # Panics
     /// Panics if the provided `degree` is zero.
     pub fn new(degree: usize) -> Self {
-        assert!(
-            degree > 0,
-            "transition constraint degree must be at least one, but was zero"
-        );
-        TransitionConstraintDegree {
-            base: degree,
-            cycles: vec![],
-        }
+        assert!(degree > 0, "transition constraint degree must be at least one, but was zero");
+        TransitionConstraintDegree { base: degree, cycles: vec![] }
     }
 
     /// Creates a new transition degree descriptor for constraints which involve multiplication
@@ -68,10 +64,7 @@ impl TransitionConstraintDegree {
                 "cycle length must be a power of two, but was {cycle} for cycle {i}"
             );
         }
-        TransitionConstraintDegree {
-            base: base_degree,
-            cycles,
-        }
+        TransitionConstraintDegree { base: base_degree, cycles }
     }
 
     /// Computes a degree to which this degree description expands in the context of execution
@@ -118,9 +111,6 @@ impl TransitionConstraintDegree {
         // For example, if degree of our constraints is 6, the blowup factor would need to be 8.
         // However, if the degree is 5, the blowup factor could be as small as 4.
         let degree_bound = self.base + self.cycles.len() - 1;
-        cmp::max(
-            degree_bound.next_power_of_two(),
-            ProofOptions::MIN_BLOWUP_FACTOR,
-        )
+        cmp::max(degree_bound.next_power_of_two(), ProofOptions::MIN_BLOWUP_FACTOR)
     }
 }

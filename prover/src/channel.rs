@@ -3,28 +3,32 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
+use alloc::vec::Vec;
+use core::marker::PhantomData;
+
 use air::{
-    proof::{Commitments, Context, OodFrame, Queries, StarkProof},
+    proof::{
+        merge_ood_evaluations, Commitments, Context, OodFrame, Proof, Queries, QuotientOodFrame,
+        TraceOodFrame,
+    },
     Air, ConstraintCompositionCoefficients, DeepCompositionCoefficients,
 };
-use core::marker::PhantomData;
-use crypto::{ElementHasher, RandomCoin};
-use fri::{self, FriProof};
+use crypto::{ElementHasher, RandomCoin, VectorCommitment};
+use fri::FriProof;
 use math::{FieldElement, ToElements};
-use utils::collections::Vec;
-
 #[cfg(feature = "concurrent")]
 use utils::iterators::*;
 
 // TYPES AND INTERFACES
 // ================================================================================================
 
-pub struct ProverChannel<'a, A, E, H, R>
+pub struct ProverChannel<'a, A, E, H, R, V>
 where
     A: Air,
     E: FieldElement<BaseField = A::BaseField>,
     H: ElementHasher<BaseField = A::BaseField>,
     R: RandomCoin<BaseField = E::BaseField, Hasher = H>,
+    V: VectorCommitment<H>,
 {
     air: &'a A,
     public_coin: R,
@@ -33,23 +37,31 @@ where
     ood_frame: OodFrame,
     pow_nonce: u64,
     _field_element: PhantomData<E>,
+    _vector_commitment: PhantomData<V>,
 }
 
 // PROVER CHANNEL IMPLEMENTATION
 // ================================================================================================
 
-impl<'a, A, E, H, R> ProverChannel<'a, A, E, H, R>
+impl<'a, A, E, H, R, V> ProverChannel<'a, A, E, H, R, V>
 where
     A: Air,
     E: FieldElement<BaseField = A::BaseField>,
     H: ElementHasher<BaseField = A::BaseField>,
     R: RandomCoin<BaseField = A::BaseField, Hasher = H>,
+    V: VectorCommitment<H>,
 {
     // CONSTRUCTOR
     // --------------------------------------------------------------------------------------------
     /// Creates a new prover channel for the specified `air` and public inputs.
     pub fn new(air: &'a A, mut pub_inputs_elements: Vec<A::BaseField>) -> Self {
-        let context = Context::new::<A::BaseField>(air.trace_info(), air.options().clone());
+        let num_constraints =
+            air.context().num_assertions() + air.context().num_transition_constraints();
+        let context = Context::new::<A::BaseField>(
+            air.trace_info().clone(),
+            air.options().clone(),
+            num_constraints,
+        );
 
         // build a seed for the public coin; the initial seed is a hash of the proof context and
         // the public inputs, but as the protocol progresses, the coin will be reseeded with the
@@ -65,6 +77,7 @@ where
             ood_frame: OodFrame::default(),
             pow_nonce: 0,
             _field_element: PhantomData,
+            _vector_commitment: PhantomData,
         }
     }
 
@@ -83,33 +96,28 @@ where
         self.public_coin.reseed(constraint_root);
     }
 
-    /// Saves the evaluations of trace polynomials over the out-of-domain evaluation frame. This
-    /// also reseeds the public coin with the hashes of the evaluation frame states.
-    pub fn send_ood_trace_states(&mut self, trace_states: &[Vec<E>]) {
-        self.ood_frame.set_trace_states(trace_states);
-        for trace_state in trace_states {
-            self.public_coin.reseed(H::hash_elements(trace_state));
-        }
-    }
+    /// Saves the evaluations of the trace and constraint composition polynomials over
+    /// the out-of-domain evaluation frame. This also reseeds the public coin with the hash
+    /// of all OOD evaluations.
+    pub fn send_ood_evaluations(
+        &mut self,
+        trace_ood_frame: &TraceOodFrame<E>,
+        constraints_ood_frame: &QuotientOodFrame<E>,
+    ) {
+        self.ood_frame.set_trace_states::<E>(trace_ood_frame);
+        self.ood_frame.set_quotient_states::<E>(constraints_ood_frame);
+        let ood_evals = merge_ood_evaluations(trace_ood_frame, constraints_ood_frame);
+        let digest = H::hash_elements(&ood_evals);
 
-    /// Saves the evaluations of constraint composition polynomial columns at the out-of-domain
-    /// point. This also reseeds the public coin wit the hash of the evaluations.
-    pub fn send_ood_constraint_evaluations(&mut self, evaluations: &[E]) {
-        self.ood_frame.set_constraint_evaluations(evaluations);
-        self.public_coin.reseed(H::hash_elements(evaluations));
+        self.public_coin.reseed(digest);
     }
 
     // PUBLIC COIN METHODS
     // --------------------------------------------------------------------------------------------
 
-    /// Returns a set of random elements required for constructing an auxiliary trace segment with
-    /// the specified index.
-    ///
-    /// The elements are drawn from the public coin uniformly at random.
-    pub fn get_aux_trace_segment_rand_elements(&mut self, aux_segment_idx: usize) -> Vec<E> {
-        self.air
-            .get_aux_trace_segment_random_elements(aux_segment_idx, &mut self.public_coin)
-            .expect("failed to draw random elements for an auxiliary trace segment")
+    /// Returns the inner public coin
+    pub fn public_coin(&mut self) -> &mut R {
+        &mut self.public_coin
     }
 
     /// Returns a set of coefficients for constructing a constraint composition polynomial.
@@ -138,13 +146,21 @@ where
     /// Returns a set of positions in the LDE domain against which the evaluations of trace and
     /// constraint composition polynomials should be queried.
     ///
-    /// The positions are drawn from the public coin uniformly at random.
+    /// The positions are drawn from the public coin uniformly at random. Duplicate positions
+    /// are removed from the returned vector.
     pub fn get_query_positions(&mut self) -> Vec<usize> {
         let num_queries = self.context.options().num_queries();
         let lde_domain_size = self.context.lde_domain_size();
-        self.public_coin
-            .draw_integers(num_queries, lde_domain_size)
-            .expect("failed to draw query position")
+        let mut positions = self
+            .public_coin
+            .draw_integers(num_queries, lde_domain_size, self.pow_nonce)
+            .expect("failed to draw query position");
+
+        // remove any duplicate positions from the list
+        positions.sort_unstable();
+        positions.dedup();
+
+        positions
     }
 
     /// Determines a nonce, which when hashed with the current seed of the public coin results
@@ -165,7 +181,6 @@ where
             .expect("nonce not found");
 
         self.pow_nonce = nonce;
-        self.public_coin.reseed_with_int(nonce);
     }
 
     // PROOF BUILDER
@@ -177,8 +192,11 @@ where
         trace_queries: Vec<Queries>,
         constraint_queries: Queries,
         fri_proof: FriProof,
-    ) -> StarkProof {
-        StarkProof {
+        num_query_positions: usize,
+    ) -> Proof {
+        assert!(num_query_positions <= u8::MAX as usize, "num_query_positions too big");
+
+        Proof {
             context: self.context,
             commitments: self.commitments,
             ood_frame: self.ood_frame,
@@ -186,6 +204,7 @@ where
             constraint_queries,
             fri_proof,
             pow_nonce: self.pow_nonce,
+            num_unique_queries: num_query_positions as u8,
         }
     }
 }
@@ -193,12 +212,13 @@ where
 // FRI PROVER CHANNEL IMPLEMENTATION
 // ================================================================================================
 
-impl<'a, A, E, H, R> fri::ProverChannel<E> for ProverChannel<'a, A, E, H, R>
+impl<A, E, H, R, V> fri::ProverChannel<E> for ProverChannel<'_, A, E, H, R, V>
 where
     A: Air,
     E: FieldElement<BaseField = A::BaseField>,
     H: ElementHasher<BaseField = A::BaseField>,
     R: RandomCoin<BaseField = A::BaseField, Hasher = H>,
+    V: VectorCommitment<H>,
 {
     type Hasher = H;
 

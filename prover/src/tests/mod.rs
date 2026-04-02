@@ -3,13 +3,15 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
-use crate::TraceTable;
+use alloc::vec::Vec;
+
 use air::{
-    Air, AirContext, Assertion, EvaluationFrame, FieldExtension, ProofOptions, TraceInfo,
-    TransitionConstraintDegree,
+    Air, AirContext, Assertion, BatchingMethod, EvaluationFrame, FieldExtension, ProofOptions,
+    TraceInfo, TransitionConstraintDegree,
 };
 use math::{fields::f128::BaseElement, FieldElement, StarkField};
-use utils::collections::Vec;
+
+use crate::TraceTable;
 
 // FIBONACCI TRACE BUILDER
 // ================================================================================================
@@ -42,7 +44,16 @@ impl MockAir {
         Self::new(
             TraceInfo::new(4, trace_length),
             (),
-            ProofOptions::new(32, 8, 0, FieldExtension::None, 4, 31),
+            ProofOptions::new(
+                32,
+                8,
+                0,
+                FieldExtension::None,
+                4,
+                31,
+                BatchingMethod::Linear,
+                BatchingMethod::Linear,
+            ),
         )
     }
 
@@ -53,7 +64,16 @@ impl MockAir {
         let mut result = Self::new(
             TraceInfo::new(4, trace_length),
             (),
-            ProofOptions::new(32, 8, 0, FieldExtension::None, 4, 31),
+            ProofOptions::new(
+                32,
+                8,
+                0,
+                FieldExtension::None,
+                4,
+                31,
+                BatchingMethod::Linear,
+                BatchingMethod::Linear,
+            ),
         );
         result.periodic_columns = column_values;
         result
@@ -63,7 +83,16 @@ impl MockAir {
         let mut result = Self::new(
             TraceInfo::new(4, trace_length),
             (),
-            ProofOptions::new(32, 8, 0, FieldExtension::None, 4, 31),
+            ProofOptions::new(
+                32,
+                8,
+                0,
+                FieldExtension::None,
+                4,
+                31,
+                BatchingMethod::Linear,
+                BatchingMethod::Linear,
+            ),
         );
         result.assertions = assertions;
         result
@@ -112,7 +141,16 @@ fn build_context<B: StarkField>(
     blowup_factor: usize,
     num_assertions: usize,
 ) -> AirContext<B> {
-    let options = ProofOptions::new(32, blowup_factor, 0, FieldExtension::None, 4, 31);
+    let options = ProofOptions::new(
+        32,
+        blowup_factor,
+        0,
+        FieldExtension::None,
+        4,
+        31,
+        BatchingMethod::Linear,
+        BatchingMethod::Linear,
+    );
     let t_degrees = vec![TransitionConstraintDegree::new(2)];
     AirContext::new(trace_info, t_degrees, num_assertions, options)
 }

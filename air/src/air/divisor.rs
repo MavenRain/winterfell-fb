@@ -3,10 +3,12 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
-use crate::air::Assertion;
+use alloc::vec::Vec;
 use core::fmt::{Display, Formatter};
-use math::{log2, FieldElement, StarkField};
-use utils::collections::Vec;
+
+use math::{FieldElement, StarkField};
+
+use crate::air::Assertion;
 
 // CONSTRAINT DIVISOR
 // ================================================================================================
@@ -34,34 +36,29 @@ impl<B: StarkField> ConstraintDivisor<B> {
 
     /// Returns a new divisor instantiated from the provided parameters.
     fn new(numerator: Vec<(usize, B)>, exemptions: Vec<B>) -> Self {
-        ConstraintDivisor {
-            numerator,
-            exemptions,
-        }
+        ConstraintDivisor { numerator, exemptions }
     }
 
     /// Builds a divisor for transition constraints.
     ///
     /// For transition constraints, the divisor polynomial $z(x)$ is always the same:
     ///
-    /// $$
-    /// z(x) = \frac{x^n - 1}{ \prod_{i=1}^k (x - g^{n-i})}
-    /// $$
+    /// $$ z(x) = \frac{x^n - 1}{ \prod_{i=1}^k (x - g^{n-i})} $$
     ///
-    /// where, $n$ is the length of the execution trace, $g$ is the generator of the trace
-    /// domain, and $k$ is the number of exemption points. The default value for $k$ is $1$.
+    /// where, $n$ is the length of the execution trace, $g$ is the generator of the trace domain,
+    /// and $k$ is the number of exemption points. The default value for $k$ is $1$.
     ///
     /// The above divisor specifies that transition constraints must hold on all steps of the
-    /// execution trace except for the last $k$ steps.
-    pub fn from_transition(trace_length: usize, num_exemptions: usize) -> Self {
-        assert!(
-            num_exemptions > 0,
-            "invalid number of transition exemptions: must be greater than zero"
-        );
-        let exemptions = (trace_length - num_exemptions..trace_length)
-            .map(|step| get_trace_domain_value_at::<B>(trace_length, step))
+    /// constraint enforcement domain except for the last $k$ steps.
+    pub fn from_transition(
+        constraint_enforcement_domain_size: usize,
+        num_exemptions: usize,
+    ) -> Self {
+        let exemptions = (constraint_enforcement_domain_size - num_exemptions
+            ..constraint_enforcement_domain_size)
+            .map(|step| get_trace_domain_value_at::<B>(constraint_enforcement_domain_size, step))
             .collect();
-        Self::new(vec![(trace_length, B::ONE)], exemptions)
+        Self::new(vec![(constraint_enforcement_domain_size, B::ONE)], exemptions)
     }
 
     /// Builds a divisor for a boundary constraint described by the assertion.
@@ -116,10 +113,7 @@ impl<B: StarkField> ConstraintDivisor<B> {
 
     /// Returns the degree of the divisor polynomial
     pub fn degree(&self) -> usize {
-        let numerator_degree = self
-            .numerator
-            .iter()
-            .fold(0, |degree, term| degree + term.0);
+        let numerator_degree = self.numerator.iter().fold(0, |degree, term| degree + term.0);
         let denominator_degree = self.exemptions.len();
         numerator_degree - denominator_degree
     }
@@ -146,9 +140,7 @@ impl<B: StarkField> ConstraintDivisor<B> {
     /// coordinate.
     #[inline(always)]
     pub fn evaluate_exemptions_at<E: FieldElement<BaseField = B>>(&self, x: E) -> E {
-        self.exemptions
-            .iter()
-            .fold(E::ONE, |r, &e| r * (x - E::from(e)))
+        self.exemptions.iter().fold(E::ONE, |r, &e| r * (x - E::from(e)))
     }
 }
 
@@ -172,11 +164,8 @@ impl<B: StarkField> Display for ConstraintDivisor<B> {
 
 /// Returns g^step, where g is the generator of trace domain.
 fn get_trace_domain_value_at<B: StarkField>(trace_length: usize, step: usize) -> B {
-    debug_assert!(
-        step < trace_length,
-        "step must be in the trace domain [0, {trace_length})"
-    );
-    let g = B::get_root_of_unity(log2(trace_length));
+    debug_assert!(step < trace_length, "step must be in the trace domain [0, {trace_length})");
+    let g = B::get_root_of_unity(trace_length.ilog2());
     g.exp((step as u64).into())
 }
 
@@ -185,8 +174,9 @@ fn get_trace_domain_value_at<B: StarkField>(trace_length: usize, step: usize) ->
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use math::{fields::f128::BaseElement, polynom};
+
+    use super::*;
 
     #[test]
     fn constraint_divisor_degree() {
@@ -196,22 +186,14 @@ mod tests {
 
         // multi-term numerator
         let div = ConstraintDivisor::new(
-            vec![
-                (4, BaseElement::ONE),
-                (2, BaseElement::new(2)),
-                (3, BaseElement::new(3)),
-            ],
+            vec![(4, BaseElement::ONE), (2, BaseElement::new(2)), (3, BaseElement::new(3))],
             vec![],
         );
         assert_eq!(9, div.degree());
 
         // multi-term numerator with exemption points
         let div = ConstraintDivisor::new(
-            vec![
-                (4, BaseElement::ONE),
-                (2, BaseElement::new(2)),
-                (3, BaseElement::new(3)),
-            ],
+            vec![(4, BaseElement::ONE), (2, BaseElement::new(2)), (3, BaseElement::new(3))],
             vec![BaseElement::ONE, BaseElement::new(2)],
         );
         assert_eq!(7, div.degree());
@@ -225,11 +207,7 @@ mod tests {
 
         // multi-term numerator: (x^4 - 1) * (x^2 - 2) * (x^3 - 3)
         let div = ConstraintDivisor::new(
-            vec![
-                (4, BaseElement::ONE),
-                (2, BaseElement::new(2)),
-                (3, BaseElement::new(3)),
-            ],
+            vec![(4, BaseElement::ONE), (2, BaseElement::new(2)), (3, BaseElement::new(3))],
             vec![],
         );
         let expected = BaseElement::new(15) * BaseElement::new(2) * BaseElement::new(5);
@@ -238,11 +216,7 @@ mod tests {
         // multi-term numerator with exemption points:
         // (x^4 - 1) * (x^2 - 2) * (x^3 - 3) / ((x - 1) * (x - 2))
         let div = ConstraintDivisor::new(
-            vec![
-                (4, BaseElement::ONE),
-                (2, BaseElement::new(2)),
-                (3, BaseElement::new(3)),
-            ],
+            vec![(4, BaseElement::ONE), (2, BaseElement::new(2)), (3, BaseElement::new(3))],
             vec![BaseElement::ONE, BaseElement::new(2)],
         );
         let expected = BaseElement::new(255) * BaseElement::new(14) * BaseElement::new(61)
@@ -279,7 +253,7 @@ mod tests {
             let expected = polynom::eval(&poly, g.exp((i as u32).into()));
             let actual = divisor.evaluate_at(g.exp((i as u32).into()));
             assert_eq!(expected, actual);
-            if i % (j as usize) == 0 {
+            if i.is_multiple_of(j as usize) {
                 assert_eq!(BaseElement::ZERO, actual);
             }
         }
@@ -290,10 +264,7 @@ mod tests {
         let offset = 1_u32;
         let assertion = Assertion::periodic(0, offset as usize, j as usize, BaseElement::ONE);
         let divisor = ConstraintDivisor::from_assertion(&assertion, n);
-        assert_eq!(
-            ConstraintDivisor::new(vec![(k as usize, g.exp(k.into()))], vec![]),
-            divisor
-        );
+        assert_eq!(ConstraintDivisor::new(vec![(k as usize, g.exp(k.into()))], vec![]), divisor);
 
         // z(x) = x^4 - g^4 = (x - g) * (x - g^3) * (x - g^5) * (x - g^7)
         let poly = polynom::mul(

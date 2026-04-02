@@ -3,13 +3,15 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
-use crate::errors::AssertionError;
+use alloc::vec::Vec;
 use core::{
-    cmp::{Ord, Ordering, PartialOrd},
+    cmp::Ordering,
     fmt::{Display, Formatter},
 };
+
 use math::FieldElement;
-use utils::collections::Vec;
+
+use crate::errors::AssertionError;
 
 #[cfg(test)]
 mod tests;
@@ -28,18 +30,18 @@ const NO_STRIDE: usize = 0;
 /// An assertion is always placed against a single column of an execution trace, but can cover
 /// multiple steps and multiple values. Specifically, there are three kinds of assertions:
 ///
-/// 1. **Single** assertion - which requires that a value in a single cell of an execution trace
-///    is equal to the specified value.
-/// 2. **Periodic** assertion - which requires that values in multiple cells of a single column
-///   are equal to the specified value. The cells must be evenly spaced at intervals with lengths
-///   equal to powers of two. For example, we can specify that values in a column must be equal
-///   to 0 at steps 0, 8, 16, 24, 32 etc. Steps can also start at some offset - e.g., 1, 9, 17,
-///   25, 33 is also a valid sequence of steps.
-/// 3. **Sequence** assertion - which requires that multiple cells in a single column are equal
-///   to the values from the provided list. The cells must be evenly spaced at intervals with
-///   lengths equal to powers of two. For example, we can specify that values in a column must
-///   be equal to a sequence 1, 2, 3, 4 at steps 0, 8, 16, 24. That is, value at step 0 should be
-///   equal to 1, value at step 8 should be equal to 2 etc.
+/// 1. **Single** assertion - which requires that a value in a single cell of an execution trace is
+///    equal to the specified value.
+/// 2. **Periodic** assertion - which requires that values in multiple cells of a single column are
+///    equal to the specified value. The cells must be evenly spaced at intervals with lengths equal
+///    to powers of two. For example, we can specify that values in a column must be equal to 0 at
+///    steps 0, 8, 16, 24, 32 etc. Steps can also start at some offset - e.g., 1, 9, 17, 25, 33 is
+///    also a valid sequence of steps.
+/// 3. **Sequence** assertion - which requires that multiple cells in a single column are equal to
+///    the values from the provided list. The cells must be evenly spaced at intervals with lengths
+///    equal to powers of two. For example, we can specify that values in a column must be equal to
+///    a sequence 1, 2, 3, 4 at steps 0, 8, 16, 24. That is, value at step 0 should be equal to 1,
+///    value at step 8 should be equal to 2 etc.
 ///
 /// Note that single and periodic assertions are succinct. That is, a verifier can evaluate them
 /// very efficiently. However, sequence assertions have liner complexity in the number of
@@ -189,7 +191,7 @@ impl<E: FieldElement> Assertion<E> {
                 return false;
             }
             if other.is_single() || self.stride < other.stride {
-                (other.first_step - self.first_step) % self.stride == 0
+                (other.first_step - self.first_step).is_multiple_of(self.stride)
             } else {
                 false
             }
@@ -198,7 +200,7 @@ impl<E: FieldElement> Assertion<E> {
                 return false;
             }
             if self.is_single() || other.stride < self.stride {
-                (self.first_step - other.first_step) % other.stride == 0
+                (self.first_step - other.first_step).is_multiple_of(other.stride)
             } else {
                 false
             }
@@ -234,18 +236,12 @@ impl<E: FieldElement> Assertion<E> {
             }
         } else if self.is_periodic() {
             if self.stride > trace_length {
-                return Err(AssertionError::TraceLengthTooShort(
-                    self.stride,
-                    trace_length,
-                ));
+                return Err(AssertionError::TraceLengthTooShort(self.stride, trace_length));
             }
         } else {
             let expected_length = self.values.len() * self.stride;
             if expected_length != trace_length {
-                return Err(AssertionError::TraceLengthNotExact(
-                    expected_length,
-                    trace_length,
-                ));
+                return Err(AssertionError::TraceLengthNotExact(expected_length, trace_length));
             }
         }
         Ok(())
@@ -260,10 +256,9 @@ impl<E: FieldElement> Assertion<E> {
     where
         F: FnMut(usize, E),
     {
-        self.validate_trace_length(trace_length)
-            .unwrap_or_else(|err| {
-                panic!("invalid trace length: {err}");
-            });
+        self.validate_trace_length(trace_length).unwrap_or_else(|err| {
+            panic!("invalid trace length: {err}");
+        });
         if self.is_single() {
             f(self.first_step, self.values[0]);
         } else if self.is_periodic() {
@@ -287,10 +282,9 @@ impl<E: FieldElement> Assertion<E> {
     /// # Panics
     /// Panics if the specified trace length is not valid for this assertion.
     pub fn get_num_steps(&self, trace_length: usize) -> usize {
-        self.validate_trace_length(trace_length)
-            .unwrap_or_else(|err| {
-                panic!("invalid trace length: {err}");
-            });
+        self.validate_trace_length(trace_length).unwrap_or_else(|err| {
+            panic!("invalid trace length: {err}");
+        });
         if self.is_single() {
             1
         } else if self.is_periodic() {
@@ -334,7 +328,7 @@ impl<E: FieldElement> Display for Assertion<E> {
             _ => {
                 let second_step = self.first_step + self.stride;
                 write!(f, "steps=[{}, {}, ...], ", self.first_step, second_step)?;
-            }
+            },
         }
         match self.values.len() {
             1 => write!(f, "value={})", self.values[0]),

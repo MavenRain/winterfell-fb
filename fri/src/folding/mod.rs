@@ -8,15 +8,15 @@
 //! This module is exposed publicly primarily for benchmarking and documentation purposes. The
 //! functions contained here are not intended to be used by the end-user of the crate.
 
-#[cfg(feature = "concurrent")]
-use utils::iterators::*;
+use alloc::vec::Vec;
 
 use math::{
-    batch_inversion,
     fft::{get_inv_twiddles, serial_fft},
     get_power_series_with_offset, polynom, FieldElement, StarkField,
 };
-use utils::{collections::Vec, iter_mut, uninit_vector};
+#[cfg(feature = "concurrent")]
+use utils::iterators::*;
+use utils::{iter_mut, uninit_vector};
 
 // DEGREE-RESPECTING PROJECTION
 // ================================================================================================
@@ -91,7 +91,7 @@ where
     // build offset inverses and twiddles used during polynomial interpolation
     let inv_offsets = get_inv_offsets(values.len(), domain_offset, N);
     let inv_twiddles = get_inv_twiddles::<B>(N);
-    let len_offset = E::inv((N as u64).into());
+    let len_offset = E::inv((N as u32).into());
 
     let mut result = unsafe { uninit_vector(values.len()) };
     iter_mut!(result)
@@ -183,8 +183,6 @@ where
     B: StarkField,
 {
     let n = domain_size * folding_factor;
-    let g = B::get_root_of_unity(n.trailing_zeros());
-    let offsets = get_power_series_with_offset(g, domain_offset, domain_size);
-
-    batch_inversion(&offsets)
+    let g = B::get_root_of_unity(n.ilog2());
+    get_power_series_with_offset(g.inv(), domain_offset.inv(), domain_size)
 }

@@ -25,11 +25,10 @@
 //! details, please refer to the documentation of the [Air] trait itself.
 //!
 //! This crate also contains components describing STARK protocol parameters ([ProofOptions]) and
-//! proof structure ([StarkProof](proof::StarkProof)).
+//! proof structure ([Proof](proof::Proof)).
 
-#![cfg_attr(not(feature = "std"), no_std)]
+#![no_std]
 
-#[cfg(not(feature = "std"))]
 #[macro_use]
 extern crate alloc;
 
@@ -39,12 +38,12 @@ mod errors;
 pub use errors::AssertionError;
 
 mod options;
-pub use options::{FieldExtension, ProofOptions};
+pub use options::{BatchingMethod, FieldExtension, PartitionOptions, ProofOptions};
 
 mod air;
 pub use air::{
-    Air, AirContext, Assertion, AuxTraceRandElements, BoundaryConstraint, BoundaryConstraintGroup,
+    Air, AirContext, Assertion, AuxRandElements, BoundaryConstraint, BoundaryConstraintGroup,
     BoundaryConstraints, ConstraintCompositionCoefficients, ConstraintDivisor,
-    DeepCompositionCoefficients, EvaluationFrame, TraceInfo, TraceLayout,
-    TransitionConstraintDegree, TransitionConstraintGroup, TransitionConstraints,
+    DeepCompositionCoefficients, EvaluationFrame, TraceInfo, TransitionConstraintDegree,
+    TransitionConstraints,
 };

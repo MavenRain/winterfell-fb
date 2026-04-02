@@ -10,20 +10,25 @@
 //! significant thought given to performance, and the implementations of most operations are
 //! sub-optimal as well.
 
-use super::{ExtensibleField, FieldElement, StarkField};
+use alloc::{
+    string::{String, ToString},
+    vec::Vec,
+};
 use core::{
-    convert::{TryFrom, TryInto},
     fmt::{Debug, Display, Formatter},
     mem,
     ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign},
     slice,
 };
+
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
 use utils::{
-    collections::Vec,
-    string::{String, ToString},
     AsBytes, ByteReader, ByteWriter, Deserializable, DeserializationError, Randomizable,
     Serializable,
 };
+
+use super::{ExtensibleField, FieldElement, StarkField};
 
 #[cfg(test)]
 mod tests;
@@ -47,7 +52,9 @@ const ELEMENT_BYTES: usize = core::mem::size_of::<u128>();
 ///
 /// Internal values are stored in their canonical form in the range [0, M). The backing type is
 /// `u128`.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+#[derive(Copy, Clone, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
 pub struct BaseElement(u128);
 
 impl BaseElement {
@@ -112,7 +119,7 @@ impl FieldElement for BaseElement {
     }
 
     unsafe fn bytes_as_elements(bytes: &[u8]) -> Result<&[Self], DeserializationError> {
-        if bytes.len() % Self::ELEMENT_BYTES != 0 {
+        if !bytes.len().is_multiple_of(Self::ELEMENT_BYTES) {
             return Err(DeserializationError::InvalidValue(format!(
                 "number of bytes ({}) does not divide into whole number of field elements",
                 bytes.len(),
@@ -122,32 +129,13 @@ impl FieldElement for BaseElement {
         let p = bytes.as_ptr();
         let len = bytes.len() / Self::ELEMENT_BYTES;
 
-        if (p as usize) % mem::align_of::<u128>() != 0 {
+        if !(p as usize).is_multiple_of(mem::align_of::<u128>()) {
             return Err(DeserializationError::InvalidValue(
                 "slice memory alignment is not valid for this field element type".to_string(),
             ));
         }
 
         Ok(slice::from_raw_parts(p as *const Self, len))
-    }
-
-    // UTILITIES
-    // --------------------------------------------------------------------------------------------
-
-    fn zeroed_vector(n: usize) -> Vec<Self> {
-        // this uses a specialized vector initialization code which requests zero-filled memory
-        // from the OS; unfortunately, this works only for built-in types and we can't use
-        // Self::ZERO here as much less efficient initialization procedure will be invoked.
-        // We also use u128 to make sure the memory is aligned correctly for our element size.
-        debug_assert_eq!(Self::ELEMENT_BYTES, mem::size_of::<u128>());
-        let result = vec![0u128; n];
-
-        // translate a zero-filled vector of u128s into a vector of base field elements
-        let mut v = core::mem::ManuallyDrop::new(result);
-        let p = v.as_mut_ptr();
-        let len = v.len();
-        let cap = v.capacity();
-        unsafe { Vec::from_raw_parts(p as *mut Self, len, cap) }
     }
 }
 
@@ -188,6 +176,12 @@ impl Randomizable for BaseElement {
 
     fn from_random_bytes(bytes: &[u8]) -> Option<Self> {
         Self::try_from(bytes).ok()
+    }
+}
+
+impl Debug for BaseElement {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{self}")
     }
 }
 
@@ -316,14 +310,6 @@ impl ExtensibleField<3> for BaseElement {
 // TYPE CONVERSIONS
 // ================================================================================================
 
-impl From<u128> for BaseElement {
-    /// Converts a 128-bit value into a field element. If the value is greater than or equal to
-    /// the field modulus, modular reduction is silently performed.
-    fn from(value: u128) -> Self {
-        BaseElement::new(value)
-    }
-}
-
 impl From<u64> for BaseElement {
     /// Converts a 64-bit value into a field element.
     fn from(value: u64) -> Self {
@@ -352,26 +338,28 @@ impl From<u8> for BaseElement {
     }
 }
 
-impl From<[u8; 16]> for BaseElement {
-    /// Converts the value encoded in an array of 16 bytes into a field element. The bytes
-    /// are assumed to be in little-endian byte order. If the value is greater than or equal
-    /// to the field modulus, modular reduction is silently performed.
-    fn from(bytes: [u8; 16]) -> Self {
-        let value = u128::from_le_bytes(bytes);
-        BaseElement::from(value)
+impl TryFrom<u128> for BaseElement {
+    type Error = String;
+
+    fn try_from(value: u128) -> Result<Self, Self::Error> {
+        if value >= M {
+            Err(format!(
+                "invalid field element: value {value} is greater than or equal to the field modulus"
+            ))
+        } else {
+            Ok(Self::new(value))
+        }
     }
 }
 
-impl<'a> TryFrom<&'a [u8]> for BaseElement {
+impl TryFrom<&'_ [u8]> for BaseElement {
     type Error = String;
 
     /// Converts a slice of bytes into a field element; returns error if the value encoded in bytes
     /// is not a valid field element. The bytes are assumed to be in little-endian byte order.
     fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
-        let value = bytes
-            .try_into()
-            .map(u128::from_le_bytes)
-            .map_err(|error| format!("{error}"))?;
+        let value =
+            bytes.try_into().map(u128::from_le_bytes).map_err(|error| format!("{error}"))?;
         if value >= M {
             return Err(format!(
                 "cannot convert bytes into a field element: \
@@ -396,6 +384,10 @@ impl AsBytes for BaseElement {
 impl Serializable for BaseElement {
     fn write_into<W: ByteWriter>(&self, target: &mut W) {
         target.write_bytes(&self.0.to_le_bytes());
+    }
+
+    fn get_size_hint(&self) -> usize {
+        self.0.get_size_hint()
     }
 }
 

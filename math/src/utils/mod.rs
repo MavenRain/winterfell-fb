@@ -3,11 +3,13 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
-use crate::{field::FieldElement, ExtensionOf};
-use utils::{batch_iter_mut, collections::Vec, iter_mut, uninit_vector};
+use alloc::vec::Vec;
 
 #[cfg(feature = "concurrent")]
 use utils::iterators::*;
+use utils::{batch_iter_mut, iter_mut, uninit_vector};
+
+use crate::{field::FieldElement, ExtensionOf};
 
 // MATH FUNCTIONS
 // ================================================================================================
@@ -26,9 +28,7 @@ use utils::iterators::*;
 /// let n = 2048;
 /// let b = BaseElement::from(3u8);
 ///
-/// let expected = (0..n)
-///     .map(|p| b.exp((p as u64).into()))
-///     .collect::<Vec<_>>();
+/// let expected = (0..n).map(|p| b.exp((p as u64).into())).collect::<Vec<_>>();
 ///
 /// let actual = get_power_series(b, n);
 /// assert_eq!(expected, actual);
@@ -61,9 +61,7 @@ where
 /// let b = BaseElement::from(3u8);
 /// let s = BaseElement::from(7u8);
 ///
-/// let expected = (0..n)
-///     .map(|p| s * b.exp((p as u64).into()))
-///     .collect::<Vec<_>>();
+/// let expected = (0..n).map(|p| s * b.exp((p as u64).into())).collect::<Vec<_>>();
 ///
 /// let actual = get_power_series_with_offset(b, s, n);
 /// assert_eq!(expected, actual);
@@ -107,10 +105,7 @@ pub fn add_in_place<E>(a: &mut [E], b: &[E])
 where
     E: FieldElement,
 {
-    assert!(
-        a.len() == b.len(),
-        "number of values must be the same for both operands"
-    );
+    assert!(a.len() == b.len(), "number of values must be the same for both operands");
     iter_mut!(a).zip(b).for_each(|(a, &b)| *a += b);
 }
 
@@ -145,10 +140,7 @@ where
     F: FieldElement,
     E: FieldElement<BaseField = F::BaseField> + ExtensionOf<F>,
 {
-    assert!(
-        a.len() == b.len(),
-        "number of values must be the same for both slices"
-    );
+    assert!(a.len() == b.len(), "number of values must be the same for both slices");
     iter_mut!(a).zip(b).for_each(|(a, &b)| *a += c.mul_base(b));
 }
 
@@ -160,7 +152,7 @@ where
 /// threads.
 ///
 /// This function is significantly faster than inverting elements one-by-one because it
-/// essentially transforms `n` inversions into `4 * n` multiplications + 1 inversion.
+/// essentially transforms `n` inversions into `3 * n` multiplications + 1 inversion.
 ///
 /// # Examples
 /// ```
@@ -185,24 +177,6 @@ where
         serial_batch_inversion(&values[start..end], batch);
     });
     result
-}
-
-/// Returns base 2 logarithm of `n`, where `n` is a power of two.
-///
-/// # Panics
-/// Panics if `n` is not a power of two.
-///
-/// # Examples
-/// ```
-/// # use winter_math::log2;
-/// assert_eq!(log2(1), 0);
-/// assert_eq!(log2(16), 4);
-/// assert_eq!(log2(1 << 20), 20);
-/// assert_eq!(log2(2usize.pow(20)), 20);
-/// ```
-pub fn log2(n: usize) -> u32 {
-    assert!(n.is_power_of_two(), "n must be a power of two");
-    n.trailing_zeros()
 }
 
 // HELPER FUNCTIONS

@@ -3,13 +3,15 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
-use crate::utils::{are_equal, EvaluationResult};
 use core::slice;
+
+use core_utils::{ByteReader, ByteWriter, Deserializable, DeserializationError, Serializable};
 use winterfell::{
     crypto::{Digest, Hasher},
     math::{fields::f128::BaseElement, FieldElement},
-    ByteReader, ByteWriter, Deserializable, DeserializationError, Serializable,
 };
+
+use crate::utils::{are_equal, EvaluationResult};
 
 /// Function state is set to 6 field elements or 96 bytes; 4 elements are reserved for rate
 /// and 2 elements are reserved for capacity.
@@ -19,6 +21,8 @@ pub const RATE_WIDTH: usize = 4;
 /// Two elements (32-bytes) are returned as digest.
 const DIGEST_SIZE: usize = 2;
 
+/// Number of rounds in a single permutation of the hash function.
+///
 /// The number of rounds is set to 7 to provide 128-bit security level with 40% security margin;
 /// computed using algorithm 7 from <https://eprint.iacr.org/2020/1143.pdf>
 /// security margin here differs from Rescue Prime specification which suggests 50% security
@@ -57,7 +61,7 @@ impl Rescue128 {
         for &element in data {
             self.state[self.idx] += element;
             self.idx += 1;
-            if self.idx % RATE_WIDTH == 0 {
+            if self.idx.is_multiple_of(RATE_WIDTH) {
                 apply_permutation(&mut self.state);
                 self.idx = 0;
             }
@@ -82,7 +86,7 @@ impl Rescue128 {
         for &element in data.iter() {
             state[i] += element;
             i += 1;
-            if i % RATE_WIDTH == 0 {
+            if i.is_multiple_of(RATE_WIDTH) {
                 apply_permutation(&mut state);
                 i = 0;
             }
@@ -111,6 +115,10 @@ impl Hasher for Rescue128 {
 
     fn merge(values: &[Self::Digest; 2]) -> Self::Digest {
         Self::digest(Hash::hashes_as_elements(values))
+    }
+
+    fn merge_many(_values: &[Self::Digest]) -> Self::Digest {
+        unimplemented!("not implemented")
     }
 
     fn merge_with_int(_seed: Self::Digest, _value: u64) -> Self::Digest {

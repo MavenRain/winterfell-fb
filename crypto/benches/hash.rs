@@ -3,11 +3,13 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
-use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion};
+use std::hint::black_box;
+
+use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
 use math::fields::f128;
 use rand_utils::rand_value;
 use winter_crypto::{
-    hashers::{Blake3_256, GriffinJive64_256, Rp62_248, Rp64_256, RpJive64_256, Sha3_256},
+    hashers::{Blake3_256, Rp62_248, Rp64_256, RpJive64_256, Sha3_256},
     Hasher,
 };
 
@@ -20,13 +22,10 @@ type Sha3Digest = <Sha3 as Hasher>::Digest;
 type Rp62_248Digest = <Rp62_248 as Hasher>::Digest;
 type Rp64_256Digest = <Rp64_256 as Hasher>::Digest;
 type RpJive64_256Digest = <RpJive64_256 as Hasher>::Digest;
-type GriffinJive64_256Digest = <GriffinJive64_256 as Hasher>::Digest;
 
 fn blake3(c: &mut Criterion) {
     let v: [Blake3Digest; 2] = [Blake3::hash(&[1u8]), Blake3::hash(&[2u8])];
-    c.bench_function("hash_blake3 (cached)", |bench| {
-        bench.iter(|| Blake3::merge(black_box(&v)))
-    });
+    c.bench_function("hash_blake3 (cached)", |bench| bench.iter(|| Blake3::merge(black_box(&v))));
 
     c.bench_function("hash_blake3 (random)", |b| {
         b.iter_batched(
@@ -44,9 +43,7 @@ fn blake3(c: &mut Criterion) {
 
 fn sha3(c: &mut Criterion) {
     let v: [Sha3Digest; 2] = [Sha3::hash(&[1u8]), Sha3::hash(&[2u8])];
-    c.bench_function("hash_sha3 (cached)", |bench| {
-        bench.iter(|| Sha3::merge(black_box(&v)))
-    });
+    c.bench_function("hash_sha3 (cached)", |bench| bench.iter(|| Sha3::merge(black_box(&v))));
 
     c.bench_function("hash_sha3 (random)", |b| {
         b.iter_batched(
@@ -122,36 +119,5 @@ fn rescue_jive256(c: &mut Criterion) {
     });
 }
 
-fn griffin_jive256(c: &mut Criterion) {
-    let v: [GriffinJive64_256Digest; 2] = [
-        GriffinJive64_256::hash(&[1u8]),
-        GriffinJive64_256::hash(&[2u8]),
-    ];
-    c.bench_function("hash_griffin_jive64_256 (cached)", |bench| {
-        bench.iter(|| GriffinJive64_256::merge(black_box(&v)))
-    });
-
-    c.bench_function("hash_griffin_jive64_256 (random)", |b| {
-        b.iter_batched(
-            || {
-                [
-                    GriffinJive64_256::hash(&rand_value::<u64>().to_le_bytes()),
-                    GriffinJive64_256::hash(&rand_value::<u64>().to_le_bytes()),
-                ]
-            },
-            |state| GriffinJive64_256::merge(&state),
-            BatchSize::SmallInput,
-        )
-    });
-}
-
-criterion_group!(
-    hash_group,
-    blake3,
-    sha3,
-    rescue248,
-    rescue256,
-    rescue_jive256,
-    griffin_jive256,
-);
+criterion_group!(hash_group, blake3, sha3, rescue248, rescue256, rescue_jive256);
 criterion_main!(hash_group);

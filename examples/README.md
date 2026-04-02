@@ -8,7 +8,7 @@ First, compile an optimized version of the `winterfell` binary by running:
 ```
 cargo build --release
 ```
-Or, if you want to compile the with multi-threaded support enabled, run:
+Or, if you want to compile with multi-threaded support enabled, run:
 ```
 cargo build --release --manifest-path examples/Cargo.toml --features concurrent
 ```
@@ -48,13 +48,13 @@ These improvements come at the expense of slightly more complex proof verificati
 
 You can run these examples like so:
 ```
-./target/release/winterfell [FLAGS] [OPTIONS] [fib|fib4|mulfib] [sequence length]
+./target/release/winterfell [FLAGS] [OPTIONS] [fib|fib8|mulfib] [sequence length]
 ```
 where:
 
 * **sequence length** is the term of the Fibonacci sequence to compute. Currently, this must be a power of 2. The default is 1,048,576 (same as 2<sup>20</sup>).
 
-For example, the following command will generate and very a proof for computing a Fibonacci sequence up to 1024th term.
+For example, the following command will generate and verify a proof for computing a Fibonacci sequence up to 1024th term.
 ```
 ./target/release/winterfell fib -n 1024 
 ```

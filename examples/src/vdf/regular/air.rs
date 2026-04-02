@@ -3,11 +3,12 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
-use super::{BaseElement, FieldElement, ProofOptions, ALPHA, FORTY_TWO};
 use winterfell::{
     math::ToElements, Air, AirContext, Assertion, EvaluationFrame, TraceInfo,
     TransitionConstraintDegree,
 };
+
+use super::{BaseElement, FieldElement, ProofOptions, ALPHA, FORTY_TWO, TRACE_WIDTH};
 
 // PUBLIC INPUTS
 // ================================================================================================
@@ -39,6 +40,7 @@ impl Air for VdfAir {
 
     fn new(trace_info: TraceInfo, pub_inputs: VdfInputs, options: ProofOptions) -> Self {
         let degrees = vec![TransitionConstraintDegree::new(3)];
+        assert_eq!(TRACE_WIDTH, trace_info.width());
         Self {
             context: AirContext::new(trace_info, degrees, 2, options),
             seed: pub_inputs.seed,
@@ -60,10 +62,7 @@ impl Air for VdfAir {
 
     fn get_assertions(&self) -> Vec<Assertion<Self::BaseField>> {
         let last_step = self.trace_length() - 1;
-        vec![
-            Assertion::single(0, 0, self.seed),
-            Assertion::single(0, last_step, self.result),
-        ]
+        vec![Assertion::single(0, 0, self.seed), Assertion::single(0, last_step, self.result)]
     }
 
     fn context(&self) -> &AirContext<Self::BaseField> {

@@ -4,6 +4,7 @@
 // LICENSE file in the root directory of this source tree.
 
 use core::ops::Range;
+
 use winterfell::{
     math::{FieldElement, StarkField},
     Trace, TraceTable,
@@ -68,7 +69,7 @@ pub fn print_trace<E: StarkField>(
 
     let mut state = vec![E::ZERO; trace_width];
     for i in 0..trace.length() {
-        if (i.wrapping_sub(offset)) % multiples_of != 0 {
+        if !(i.wrapping_sub(offset)).is_multiple_of(multiples_of) {
             continue;
         }
         trace.read_row_into(i, &mut state);
@@ -92,9 +93,6 @@ pub fn print_trace_step<E: StarkField>(trace: &[Vec<E>], step: usize) {
     println!(
         "{}\t{:?}",
         step,
-        state
-            .iter()
-            .map(|v| v.as_int())
-            .collect::<Vec<E::PositiveInteger>>()
+        state.iter().map(|v| v.as_int()).collect::<Vec<E::PositiveInteger>>()
     );
 }

@@ -3,14 +3,13 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
+use proptest::prelude::*;
+use rand_utils::{rand_array, rand_value};
+
 use super::{
     BaseElement, ElementDigest, ElementHasher, FieldElement, Hasher, Rp64_256, StarkField, ALPHA,
     INV_ALPHA, INV_MDS, MDS, STATE_WIDTH,
 };
-use core::convert::TryInto;
-use proptest::prelude::*;
-
-use rand_utils::{rand_array, rand_value};
 
 #[test]
 fn mds_inv_test() {
@@ -120,6 +119,20 @@ fn hash_elements_vs_merge() {
 }
 
 #[test]
+fn merge_vs_merge_many() {
+    let elements: [BaseElement; 8] = rand_array();
+
+    let digests: [ElementDigest; 2] = [
+        ElementDigest::new(elements[..4].try_into().unwrap()),
+        ElementDigest::new(elements[4..].try_into().unwrap()),
+    ];
+
+    let m_result = Rp64_256::merge(&digests);
+    let h_result = Rp64_256::merge_many(&digests);
+    assert_eq!(m_result, h_result);
+}
+
+#[test]
 fn hash_elements_vs_merge_with_int() {
     let seed = ElementDigest::new(rand_array());
 
@@ -191,15 +204,15 @@ fn apply_mds_naive(state: &mut [BaseElement; STATE_WIDTH]) {
 
 proptest! {
     #[test]
-    fn mds_freq_proptest(a in any::<[u64;STATE_WIDTH]>()) {
+    fn mds_freq_proptest(a in any::<[u64; STATE_WIDTH]>()) {
 
-        let mut v1 = [BaseElement::ZERO;STATE_WIDTH];
+        let mut v1 = [BaseElement::ZERO; STATE_WIDTH];
         let mut v2;
 
         for i in 0..STATE_WIDTH {
             v1[i] = BaseElement::new(a[i]);
         }
-        v2 = v1.clone();
+        v2 = v1;
 
         apply_mds_naive(&mut v1);
         Rp64_256::apply_mds(&mut v2);

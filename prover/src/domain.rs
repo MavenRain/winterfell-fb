@@ -3,13 +3,15 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
+use alloc::vec::Vec;
+
 use air::Air;
-use math::{fft, get_power_series, log2, StarkField};
-use utils::collections::Vec;
+use math::{fft, get_power_series, StarkField};
 
 // TYPES AND INTERFACES
 // ================================================================================================
 
+/// Info about domains related to specific instance of proof generation.
 pub struct StarkDomain<B: StarkField> {
     /// Twiddles which can be used to evaluate polynomials in the trace domain. Length of this
     /// vector is half the length of the trace domain size.
@@ -39,7 +41,7 @@ impl<B: StarkField> StarkDomain<B> {
         let trace_twiddles = fft::get_twiddles(air.trace_length());
 
         // build constraint evaluation domain
-        let domain_gen = B::get_root_of_unity(log2(air.ce_domain_size()));
+        let domain_gen = B::get_root_of_unity(air.ce_domain_size().ilog2());
         let ce_domain = get_power_series(domain_gen, air.ce_domain_size());
 
         StarkDomain {
@@ -58,13 +60,10 @@ impl<B: StarkField> StarkDomain<B> {
             trace_twiddles.len().is_power_of_two(),
             "the length of trace twiddles must be a power of 2"
         );
-        assert!(
-            blowup_factor.is_power_of_two(),
-            "blowup factor must be a power of 2"
-        );
+        assert!(blowup_factor.is_power_of_two(), "blowup factor must be a power of 2");
 
         let ce_domain_size = trace_twiddles.len() * blowup_factor * 2;
-        let domain_gen = B::get_root_of_unity(log2(ce_domain_size));
+        let domain_gen = B::get_root_of_unity(ce_domain_size.ilog2());
         let ce_domain = get_power_series(domain_gen, ce_domain_size);
 
         StarkDomain {
@@ -110,7 +109,7 @@ impl<B: StarkField> StarkDomain<B> {
 
     /// Returns the generator of constraint evaluation domain.
     pub fn ce_domain_generator(&self) -> B {
-        B::get_root_of_unity(log2(self.ce_domain_size()))
+        B::get_root_of_unity(self.ce_domain_size().ilog2())
     }
 
     /// Returns blowup factor from constraint evaluation to LDE domain.

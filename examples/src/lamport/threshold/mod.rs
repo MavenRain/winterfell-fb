@@ -3,19 +3,21 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
+use core::marker::PhantomData;
+use std::time::Instant;
+
+use tracing::{field, info_span};
+use winterfell::{
+    crypto::{DefaultRandomCoin, ElementHasher, MerkleTree},
+    math::{fields::f128::BaseElement, get_power_series, FieldElement, StarkField},
+    Proof, ProofOptions, Prover, Trace, VerifierError,
+};
+
 use super::{
     message_to_elements, rescue, Example, PrivateKey, Signature, CYCLE_LENGTH as HASH_CYCLE_LENGTH,
     NUM_HASH_ROUNDS,
 };
 use crate::{Blake3_192, Blake3_256, ExampleOptions, HashFunction, Sha3_256};
-use core::marker::PhantomData;
-use log::debug;
-use std::time::Instant;
-use winterfell::{
-    crypto::{DefaultRandomCoin, ElementHasher},
-    math::{fields::f128::BaseElement, get_power_series, log2, FieldElement, StarkField},
-    ProofOptions, Prover, StarkProof, Trace, TraceTable, VerifierError,
-};
 
 mod signature;
 use signature::AggPublicKey;
@@ -42,18 +44,15 @@ pub fn get_example(
     let (_, hash_fn) = options.to_proof_options(28, 8);
 
     match hash_fn {
-        HashFunction::Blake3_192 => Ok(Box::new(LamportThresholdExample::<Blake3_192>::new(
-            num_signers,
-            options,
-        ))),
-        HashFunction::Blake3_256 => Ok(Box::new(LamportThresholdExample::<Blake3_256>::new(
-            num_signers,
-            options,
-        ))),
-        HashFunction::Sha3_256 => Ok(Box::new(LamportThresholdExample::<Sha3_256>::new(
-            num_signers,
-            options,
-        ))),
+        HashFunction::Blake3_192 => {
+            Ok(Box::new(LamportThresholdExample::<Blake3_192>::new(num_signers, options)))
+        },
+        HashFunction::Blake3_256 => {
+            Ok(Box::new(LamportThresholdExample::<Blake3_256>::new(num_signers, options)))
+        },
+        HashFunction::Sha3_256 => {
+            Ok(Box::new(LamportThresholdExample::<Sha3_256>::new(num_signers, options)))
+        },
         _ => Err("The specified hash function cannot be used with this example.".to_string()),
     }
 }
@@ -75,7 +74,7 @@ impl<H: ElementHasher> LamportThresholdExample<H> {
         // generate private/public key pairs for the specified number of signatures
         let now = Instant::now();
         let private_keys = build_keys(num_signers);
-        debug!(
+        println!(
             "Generated {} private-public key pairs in {} ms",
             num_signers,
             now.elapsed().as_millis()
@@ -94,10 +93,7 @@ impl<H: ElementHasher> LamportThresholdExample<H> {
         // build the aggregated public key
         let now = Instant::now();
         let pub_key = AggPublicKey::new(public_keys);
-        debug!(
-            "Built aggregated public key in {} ms",
-            now.elapsed().as_millis()
-        );
+        println!("Built aggregated public key in {} ms", now.elapsed().as_millis());
 
         let (options, _) = options.to_proof_options(28, 8);
 
@@ -116,13 +112,12 @@ impl<H: ElementHasher> LamportThresholdExample<H> {
 
 impl<H: ElementHasher> Example for LamportThresholdExample<H>
 where
-    H: ElementHasher<BaseField = BaseElement>,
+    H: ElementHasher<BaseField = BaseElement> + Sync,
 {
-    fn prove(&self) -> StarkProof {
+    fn prove(&self) -> Proof {
         // generate the execution trace
-        debug!(
-            "Generating proof for verifying {}-of-{} signature \n\
-            ---------------------",
+        println!(
+            "Generating proof for verifying {}-of-{} signature",
             self.signatures.len(),
             self.pub_key.num_keys(),
         );
@@ -136,38 +131,48 @@ where
         );
 
         // generate execution trace
-        let now = Instant::now();
-        let trace = prover.build_trace(&self.pub_key, self.message, &self.signatures);
-        let trace_length = trace.length();
-        debug!(
-            "Generated execution trace of {} registers and 2^{} steps in {} ms",
-            trace.width(),
-            log2(trace_length),
-            now.elapsed().as_millis()
-        );
+        let trace =
+            info_span!("generate_execution_trace", num_cols = TRACE_WIDTH, steps = field::Empty)
+                .in_scope(|| {
+                    let trace = prover.build_trace(&self.pub_key, self.message, &self.signatures);
+                    tracing::Span::current().record("steps", trace.length());
+                    trace
+                });
 
         // generate the proof
         prover.prove(trace).unwrap()
     }
 
-    fn verify(&self, proof: StarkProof) -> Result<(), VerifierError> {
+    fn verify(&self, proof: Proof) -> Result<(), VerifierError> {
         let pub_inputs = PublicInputs {
             pub_key_root: self.pub_key.root().to_elements(),
             num_pub_keys: self.pub_key.num_keys(),
             num_signatures: self.signatures.len(),
             message: self.message,
         };
-        winterfell::verify::<LamportThresholdAir, H, DefaultRandomCoin<H>>(proof, pub_inputs)
+        let acceptable_options =
+            winterfell::AcceptableOptions::OptionSet(vec![proof.options().clone()]);
+        winterfell::verify::<LamportThresholdAir, H, DefaultRandomCoin<H>, MerkleTree<H>>(
+            proof,
+            pub_inputs,
+            &acceptable_options,
+        )
     }
 
-    fn verify_with_wrong_inputs(&self, proof: StarkProof) -> Result<(), VerifierError> {
+    fn verify_with_wrong_inputs(&self, proof: Proof) -> Result<(), VerifierError> {
         let pub_inputs = PublicInputs {
             pub_key_root: self.pub_key.root().to_elements(),
             num_pub_keys: self.pub_key.num_keys(),
             num_signatures: self.signatures.len() + 1,
             message: self.message,
         };
-        winterfell::verify::<LamportThresholdAir, H, DefaultRandomCoin<H>>(proof, pub_inputs)
+        let acceptable_options =
+            winterfell::AcceptableOptions::OptionSet(vec![proof.options().clone()]);
+        winterfell::verify::<LamportThresholdAir, H, DefaultRandomCoin<H>, MerkleTree<H>>(
+            proof,
+            pub_inputs,
+            &acceptable_options,
+        )
     }
 }
 

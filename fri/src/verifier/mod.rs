@@ -5,11 +5,13 @@
 
 //! Contains an implementation of FRI verifier and associated components.
 
+use alloc::vec::Vec;
+use core::{marker::PhantomData, mem};
+
+use crypto::{ElementHasher, RandomCoin, VectorCommitment};
+use math::{polynom, FieldElement, StarkField};
+
 use crate::{folding::fold_positions, utils::map_positions_to_indexes, FriOptions, VerifierError};
-use core::{convert::TryInto, marker::PhantomData, mem};
-use crypto::{ElementHasher, RandomCoin};
-use math::{log2, polynom, FieldElement, StarkField};
-use utils::collections::Vec;
 
 mod channel;
 pub use channel::{DefaultVerifierChannel, VerifierChannel};
@@ -26,11 +28,11 @@ pub use channel::{DefaultVerifierChannel, VerifierChannel};
 ///
 /// * `B` specifies the base field of the STARK protocol.
 /// * `E` specifies the field in which the FRI protocol is executed. This can be the same as the
-///   base field `B`, but it can also be an extension of the base field in cases when the base
-///   field is too small to provide desired security level for the FRI protocol.
-/// * `C` specifies the type used to simulate prover-verifier interaction. This type is used
-///   as an abstraction for a [FriProof](crate::FriProof). Meaning, the verifier does not consume
-///   a FRI proof directly, but reads it via [VerifierChannel] interface.
+///   base field `B`, but it can also be an extension of the base field in cases when the base field
+///   is too small to provide desired security level for the FRI protocol.
+/// * `C` specifies the type used to simulate prover-verifier interaction. This type is used as an
+///   abstraction for a [FriProof](crate::FriProof). Meaning, the verifier does not consume a FRI
+///   proof directly, but reads it via [VerifierChannel] interface.
 /// * `H` specifies the Hash function used by the prover to commit to polynomial evaluations.
 ///
 /// Proof verification is performed in two phases: commit phase and query phase.
@@ -46,21 +48,22 @@ pub use channel::{DefaultVerifierChannel, VerifierChannel};
 /// # Query phase
 /// During the query phase, which is executed via [verify()](FriVerifier::verify()) function,
 /// the verifier sends a set of positions in the domain *D* to the prover, and the prover responds
-/// with polynomial evaluations at these positions (together with corresponding Merkle paths)
+/// with polynomial evaluations at these positions (together with corresponding opening proofs)
 /// across all FRI layers. The verifier then checks that:
-/// * The Merkle paths are valid against the layer commitments the verifier received during
-///   the commit phase.
-/// * The evaluations are consistent across FRI layers (i.e., the degree-respecting projection
-///   was applied correctly).
-/// * The degree of the polynomial implied by evaluations at the last FRI layer (the remainder)
-///   is smaller than the degree resulting from reducing degree *d* by `folding_factor` at each
-///   FRI layer.
-pub struct FriVerifier<E, C, H, R>
+/// * The opening proofs are valid against the layer commitments the verifier received during the
+///   commit phase.
+/// * The evaluations are consistent across FRI layers (i.e., the degree-respecting projection was
+///   applied correctly).
+/// * The degree of the polynomial implied by evaluations at the last FRI layer (the remainder) is
+///   smaller than the degree resulting from reducing degree *d* by `folding_factor` at each FRI
+///   layer.
+pub struct FriVerifier<E, C, H, R, V>
 where
     E: FieldElement,
     C: VerifierChannel<E, Hasher = H>,
     H: ElementHasher<BaseField = E::BaseField>,
     R: RandomCoin<BaseField = E::BaseField, Hasher = H>,
+    V: VectorCommitment<H>,
 {
     max_poly_degree: usize,
     domain_size: usize,
@@ -71,14 +74,16 @@ where
     num_partitions: usize,
     _channel: PhantomData<C>,
     _public_coin: PhantomData<R>,
+    _vector_com: PhantomData<V>,
 }
 
-impl<E, C, H, R> FriVerifier<E, C, H, R>
+impl<E, C, H, R, V> FriVerifier<E, C, H, R, V>
 where
     E: FieldElement,
-    C: VerifierChannel<E, Hasher = H>,
+    C: VerifierChannel<E, Hasher = H, VectorCommitment = V>,
     H: ElementHasher<BaseField = E::BaseField>,
     R: RandomCoin<BaseField = E::BaseField, Hasher = H>,
+    V: VectorCommitment<H>,
 {
     /// Returns a new instance of FRI verifier created from the specified parameters.
     ///
@@ -96,8 +101,8 @@ where
     ///
     /// # Errors
     /// Returns an error if:
-    /// * `max_poly_degree` is inconsistent with the number of FRI layers read from the channel
-    ///   and `folding_factor` specified in the `options` parameter.
+    /// * `max_poly_degree` is inconsistent with the number of FRI layers read from the channel and
+    ///   `folding_factor` specified in the `options` parameter.
     /// * An error was encountered while drawing a random α value from the coin.
     pub fn new(
         channel: &mut C,
@@ -107,7 +112,7 @@ where
     ) -> Result<Self, VerifierError> {
         // infer evaluation domain info
         let domain_size = max_poly_degree.next_power_of_two() * options.blowup_factor();
-        let domain_generator = E::BaseField::get_root_of_unity(log2(domain_size));
+        let domain_generator = E::BaseField::get_root_of_unity(domain_size.ilog2());
 
         let num_partitions = channel.read_fri_num_partitions();
 
@@ -123,7 +128,7 @@ where
             // make sure the degree can be reduced by the folding factor at all layers
             // but the remainder layer
             if depth != layer_commitments.len() - 1
-                && max_degree_plus_1 % options.folding_factor() != 0
+                && !max_degree_plus_1.is_multiple_of(options.folding_factor())
             {
                 return Err(VerifierError::DegreeTruncation(
                     max_degree_plus_1 - 1,
@@ -144,6 +149,7 @@ where
             num_partitions,
             _channel: PhantomData,
             _public_coin: PhantomData,
+            _vector_com: PhantomData,
         })
     }
 
@@ -195,10 +201,10 @@ where
     /// Returns an error if:
     /// * The length of `evaluations` is not equal to the length of `positions`.
     /// * An unsupported folding factor was specified by the `options` for this verifier.
-    /// * Decommitments to polynomial evaluations don't match the commitment value at any of the
-    ///   FRI layers.
-    /// * The verifier detects an error in how the degree-respecting projection was applied
-    ///   at any of the FRI layers.
+    /// * Decommitments to polynomial evaluations don't match the commitment value at any of the FRI
+    ///   layers.
+    /// * The verifier detects an error in how the degree-respecting projection was applied at any
+    ///   of the FRI layers.
     /// * The degree of the remainder at the last FRI layer is greater than the degree implied by
     ///   `max_poly_degree` reduced by the folding factor at each FRI layer.
     pub fn verify(
@@ -235,13 +241,10 @@ where
     ) -> Result<(), VerifierError> {
         // pre-compute roots of unity used in computing x coordinates in the folded domain
         let folding_roots = (0..N)
-            .map(|i| {
-                self.domain_generator
-                    .exp_vartime(((self.domain_size / N * i) as u64).into())
-            })
+            .map(|i| self.domain_generator.exp_vartime(((self.domain_size / N * i) as u64).into()))
             .collect::<Vec<_>>();
 
-        // 1 ----- verify the recursive components of the FRI proof -----------------------------------
+        // 1 ----- verify the recursive components of the FRI proof -------------------------------
         let mut domain_generator = self.domain_generator;
         let mut domain_size = self.domain_size;
         let mut max_degree_plus_1 = self.max_poly_degree + 1;
@@ -252,14 +255,14 @@ where
             // determine which evaluations were queried in the folded layer
             let mut folded_positions =
                 fold_positions(&positions, domain_size, self.options.folding_factor());
-            // determine where these evaluations are in the commitment Merkle tree
+            // determine where these evaluations are in the vector commitment
             let position_indexes = map_positions_to_indexes(
                 &folded_positions,
                 domain_size,
                 self.options.folding_factor(),
                 self.num_partitions,
             );
-            // read query values from the specified indexes in the Merkle tree
+            // read query values from the specified indexes
             let layer_commitment = self.layer_commitments[depth];
             // TODO: add layer depth to the potential error message
             let layer_values = channel.read_layer_queries(&position_indexes, &layer_commitment)?;
@@ -290,12 +293,8 @@ where
             evaluations = row_polys.iter().map(|p| polynom::eval(p, alpha)).collect();
 
             // make sure next degree reduction does not result in degree truncation
-            if max_degree_plus_1 % N != 0 {
-                return Err(VerifierError::DegreeTruncation(
-                    max_degree_plus_1 - 1,
-                    N,
-                    depth,
-                ));
+            if !max_degree_plus_1.is_multiple_of(N) {
+                return Err(VerifierError::DegreeTruncation(max_degree_plus_1 - 1, N, depth));
             }
 
             // update variables for the next iteration of the loop
@@ -307,18 +306,18 @@ where
 
         // 2 ----- verify the remainder polynomial of the FRI proof -------------------------------
 
-        // read the remainder polynomial from the channel and make sure it agrees with the evaluations
-        // from the previous layer.
+        // read the remainder polynomial from the channel and make sure it agrees with the
+        // evaluations from the previous layer.
+        // note that the coefficients of the remainder polynomial are sent in reverse order and
+        // this simplifies evaluation using Horner's method.
         let remainder_poly = channel.read_remainder()?;
         if remainder_poly.len() > max_degree_plus_1 {
-            return Err(VerifierError::RemainderDegreeMismatch(
-                max_degree_plus_1 - 1,
-            ));
+            return Err(VerifierError::RemainderDegreeMismatch(max_degree_plus_1 - 1));
         }
         let offset: E::BaseField = self.options().domain_offset();
 
         for (&position, evaluation) in positions.iter().zip(evaluations) {
-            let comp_eval = eval_horner::<E>(
+            let comp_eval = eval_horner_rev::<E>(
                 &remainder_poly,
                 offset * domain_generator.exp_vartime((position as u64).into()),
             );
@@ -343,10 +342,7 @@ fn get_query_values<E: FieldElement, const N: usize>(
 
     let mut result = Vec::new();
     for position in positions {
-        let idx = folded_positions
-            .iter()
-            .position(|&v| v == position % row_length)
-            .unwrap();
+        let idx = folded_positions.iter().position(|&v| v == position % row_length).unwrap();
         let value = values[idx][position / row_length];
         result.push(value);
     }
@@ -354,12 +350,11 @@ fn get_query_values<E: FieldElement, const N: usize>(
     result
 }
 
-// Evaluates a polynomial with coefficients in an extension field at a point in the base field.
-pub fn eval_horner<E>(p: &[E], x: E::BaseField) -> E
+/// Evaluates a polynomial with coefficients in an extension field given in reverse order at a point
+/// in the base field.
+fn eval_horner_rev<E>(p: &[E], x: E::BaseField) -> E
 where
     E: FieldElement,
 {
-    p.iter()
-        .rev()
-        .fold(E::ZERO, |acc, &coeff| acc * E::from(x) + coeff)
+    p.iter().fold(E::ZERO, |acc, &coeff| acc * E::from(x) + coeff)
 }

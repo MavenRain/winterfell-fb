@@ -3,9 +3,11 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
-use crate::{errors::RandomCoinError, ElementHasher, Hasher};
+use alloc::vec::Vec;
+
 use math::{FieldElement, StarkField};
-use utils::collections::Vec;
+
+use crate::{errors::RandomCoinError, ElementHasher, Hasher};
 
 mod default;
 pub use default::DefaultRandomCoin;
@@ -36,14 +38,6 @@ pub trait RandomCoin: Sync {
     /// Reseeds the coin with the specified data by setting the new seed to hash(`seed` || `data`).
     fn reseed(&mut self, data: <Self::Hasher as Hasher>::Digest);
 
-    /// Reseeds the coin with the specified value by setting the new seed to hash(`seed` ||
-    /// `value`).
-    fn reseed_with_int(&mut self, value: u64);
-
-    /// Returns the number of leading zeros in the seed if it is interpreted as an integer in
-    /// big-endian byte order.
-    fn leading_zeros(&self) -> u32;
-
     /// Computes hash(`seed` || `value`) and returns the number of leading zeros in the resulting
     /// value if it is interpreted as an integer in big-endian byte order.
     fn check_leading_zeros(&self, value: u64) -> u32;
@@ -55,11 +49,12 @@ pub trait RandomCoin: Sync {
     /// PRNG.
     fn draw<E: FieldElement<BaseField = Self::BaseField>>(&mut self) -> Result<E, RandomCoinError>;
 
-    /// Returns a vector of unique integers selected from the range [0, domain_size).
+    /// Returns a vector of integers selected from the range [0, domain_size) after it reseeds
+    /// the coin with a nonce.
     ///
     /// # Errors
-    /// Returns an error if the specified number of unique integers could not be generated
-    /// after 1000 calls to the PRNG.
+    /// Returns an error if the specified number of integers could not be generated after 1000
+    /// calls to the PRNG.
     ///
     /// # Panics
     /// Panics if:
@@ -69,20 +64,6 @@ pub trait RandomCoin: Sync {
         &mut self,
         num_values: usize,
         domain_size: usize,
+        nonce: u64,
     ) -> Result<Vec<usize>, RandomCoinError>;
-
-    // PROVIDED METHODS
-    // --------------------------------------------------------------------------------------------
-
-    /// Returns the next pair of pseudo-random field elements.
-    ///
-    /// # Errors
-    /// Returns an error if any of the field elements could not be generated after 100 calls to
-    /// the PRNG;
-    fn draw_pair<E>(&mut self) -> Result<(E, E), RandomCoinError>
-    where
-        E: FieldElement<BaseField = Self::BaseField>,
-    {
-        Ok((self.draw()?, self.draw()?))
-    }
 }

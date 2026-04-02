@@ -9,8 +9,7 @@
 //! - Polynomial evaluation using Horner method.
 //! - Polynomial interpolation using Lagrange method.
 //! - Polynomial addition, subtraction, multiplication, and division.
-//! - Synthetic polynomial division for efficient division by polynomials of the form
-//!   `x`^`a` - `b`.
+//! - Synthetic polynomial division for efficient division by polynomials of the form `x`^`a` - `b`.
 //!
 //! In the context of this module any slice of field elements is considered to be a polynomial
 //! in reverse coefficient form. A few examples:
@@ -24,9 +23,12 @@
 //! let p = [BaseElement::new(3), BaseElement::ZERO, BaseElement::new(4)];
 //! ```
 
-use crate::{field::FieldElement, utils::batch_inversion};
+use alloc::vec::Vec;
 use core::mem;
-use utils::{collections::Vec, group_vector_elements};
+
+use utils::group_slice_elements;
+
+use crate::{field::FieldElement, utils::batch_inversion};
 
 #[cfg(test)]
 mod tests;
@@ -56,9 +58,7 @@ where
     E: FieldElement + From<B>,
 {
     // Horner evaluation
-    p.iter()
-        .rev()
-        .fold(E::ZERO, |acc, &coeff| acc * x + E::from(coeff))
+    p.iter().rev().fold(E::ZERO, |acc, &coeff| acc * x + E::from(coeff))
 }
 
 /// Evaluates a polynomial at multiple points and returns a vector of results.
@@ -113,22 +113,15 @@ pub fn interpolate<E>(xs: &[E], ys: &[E], remove_leading_zeros: bool) -> Vec<E>
 where
     E: FieldElement,
 {
-    debug_assert!(
-        xs.len() == ys.len(),
-        "number of X and Y coordinates must be the same"
-    );
+    debug_assert!(xs.len() == ys.len(), "number of X and Y coordinates must be the same");
 
-    let roots = get_zero_roots(xs);
+    let roots = poly_from_roots(xs);
     let numerators: Vec<Vec<E>> = xs.iter().map(|&x| syn_div(&roots, 1, x)).collect();
 
-    let denominators: Vec<E> = numerators
-        .iter()
-        .zip(xs)
-        .map(|(e, &x)| eval(e, x))
-        .collect();
+    let denominators: Vec<E> = numerators.iter().zip(xs).map(|(e, &x)| eval(e, x)).collect();
     let denominators = batch_inversion(&denominators);
 
-    let mut result = E::zeroed_vector(xs.len());
+    let mut result = vec![E::ZERO; xs.len()];
     for i in 0..xs.len() {
         let y_slice = ys[i] * denominators[i];
         for (j, res) in result.iter_mut().enumerate() {
@@ -158,22 +151,15 @@ where
 ///
 /// # Examples
 /// ```
-/// # use core::convert::TryInto;
 /// # use winter_math::polynom::*;
 /// # use winter_math::{fields::{f128::BaseElement}, FieldElement};
 /// # use rand_utils::rand_array;
-/// let x_batches: Vec<[BaseElement; 8]> = vec![
-///     rand_array(),
-///     rand_array(),
-/// ];
-/// let y_batches: Vec<[BaseElement; 8]> = vec![
-///     rand_array(),
-///     rand_array(),
-/// ];
+/// let x_batches: Vec<[BaseElement; 8]> = vec![rand_array(), rand_array()];
+/// let y_batches: Vec<[BaseElement; 8]> = vec![rand_array(), rand_array()];
 ///
 /// let polys = interpolate_batch(&x_batches, &y_batches);
 /// for ((p, xs), ys) in polys.iter().zip(x_batches).zip(y_batches) {
-///     assert_eq!(ys.to_vec(), eval_many(p, &xs));   
+///     assert_eq!(ys.to_vec(), eval_many(p, &xs));
 /// }
 /// ```
 pub fn interpolate_batch<E, const N: usize>(xs: &[[E; N]], ys: &[[E; N]]) -> Vec<[E; N]>
@@ -186,8 +172,8 @@ where
     );
 
     let n = xs.len();
-    let mut equations = group_vector_elements(E::zeroed_vector(n * N * N));
-    let mut inverses = E::zeroed_vector(n * N);
+    let mut equations = vec![[E::ZERO; N]; n * N];
+    let mut inverses = vec![E::ZERO; n * N];
 
     // TODO: converting this to an array results in about 5% speed-up, but unfortunately, complex
     // generic constraints are not yet supported: https://github.com/rust-lang/rust/issues/76560
@@ -205,10 +191,11 @@ where
             inverses[i * N + j] = eval(equation, x);
         }
     }
-    let equations = group_vector_elements::<[E; N], N>(equations);
-    let inverses = group_vector_elements::<E, N>(batch_inversion(&inverses));
+    let equations = group_slice_elements::<[E; N], N>(&equations);
+    let inverses_vec = batch_inversion(&inverses);
+    let inverses = group_slice_elements::<E, N>(&inverses_vec);
 
-    let mut result = group_vector_elements(E::zeroed_vector(n * N));
+    let mut result = vec![[E::ZERO; N]; n];
     for (i, poly) in result.iter_mut().enumerate() {
         for j in 0..N {
             let inv_y = ys[i][j] * inverses[i][j];
@@ -240,11 +227,7 @@ where
 /// let p2 = (1_u32..3).map(BaseElement::from).collect::<Vec<_>>();
 ///
 /// // expected result = 4 * x^2 + 5 * x + 3
-/// let expected = vec![
-///     BaseElement::new(3),
-///     BaseElement::new(5),
-///     BaseElement::new(4),
-/// ];
+/// let expected = vec![BaseElement::new(3), BaseElement::new(5), BaseElement::new(4)];
 /// assert_eq!(expected, add(&p1, &p2));
 /// ```
 pub fn add<E>(a: &[E], b: &[E]) -> Vec<E>
@@ -278,11 +261,7 @@ where
 /// let p2 = (1_u32..3).map(BaseElement::from).collect::<Vec<_>>();
 ///
 /// // expected result = 4 * x^2 + x + 1
-/// let expected = vec![
-///     BaseElement::new(1),
-///     BaseElement::new(1),
-///     BaseElement::new(4),
-/// ];
+/// let expected = vec![BaseElement::new(1), BaseElement::new(1), BaseElement::new(4)];
 /// assert_eq!(expected, sub(&p1, &p2));
 /// ```
 pub fn sub<E>(a: &[E], b: &[E]) -> Vec<E>
@@ -328,7 +307,7 @@ where
     E: FieldElement,
 {
     let result_len = a.len() + b.len() - 1;
-    let mut result = E::zeroed_vector(result_len);
+    let mut result = vec![E::ZERO; result_len];
     for i in 0..a.len() {
         for j in 0..b.len() {
             let s = a[i] * b[j];
@@ -347,18 +326,10 @@ where
 /// ```
 /// # use winter_math::polynom::*;
 /// # use winter_math::{fields::{f128::BaseElement}, FieldElement};
-/// let p = [
-///     BaseElement::new(1),
-///     BaseElement::new(2),
-///     BaseElement::new(3),
-/// ];
+/// let p = [BaseElement::new(1), BaseElement::new(2), BaseElement::new(3)];
 /// let k = BaseElement::new(2);
 ///
-/// let expected = vec![
-///     BaseElement::new(2),
-///     BaseElement::new(4),
-///     BaseElement::new(6),
-/// ];
+/// let expected = vec![BaseElement::new(2), BaseElement::new(4), BaseElement::new(6)];
 /// assert_eq!(expected, mul_by_scalar(&p, k));
 /// ```
 pub fn mul_by_scalar<E>(p: &[E], k: E) -> Vec<E>
@@ -417,7 +388,7 @@ where
         assert!(b[0] != E::ZERO, "cannot divide polynomial by zero");
     }
 
-    let mut result = E::zeroed_vector(apos - bpos + 1);
+    let mut result = vec![E::ZERO; apos - bpos + 1];
     for i in (0..result.len()).rev() {
         let quot = a[apos] / b[bpos];
         result[i] = quot;
@@ -459,12 +430,8 @@ where
 /// ];
 ///
 /// // expected result = x^2 + 2
-/// let expected = vec![
-///     BaseElement::new(2),
-///     BaseElement::ZERO,
-///     BaseElement::new(1),
-///     BaseElement::ZERO,
-/// ];
+/// let expected =
+///     vec![BaseElement::new(2), BaseElement::ZERO, BaseElement::new(1), BaseElement::ZERO];
 ///
 /// // divide by x + 1
 /// assert_eq!(expected, syn_div(&p, 1, -BaseElement::ONE));
@@ -527,10 +494,7 @@ where
 {
     assert!(a != 0, "divisor degree cannot be zero");
     assert!(b != E::ZERO, "constant cannot be zero");
-    assert!(
-        p.len() > a,
-        "divisor degree cannot be greater than dividend size"
-    );
+    assert!(p.len() > a, "divisor degree cannot be greater than dividend size");
 
     if a == 1 {
         // if we are dividing by (x - `b`), we can use a single variable to keep track
@@ -561,6 +525,64 @@ where
     }
 }
 
+/// Divides a polynomial by a polynomial given its roots and saves the result into the original
+/// polynomial.
+///
+/// Specifically, divides polynomial `p` by polynomial \prod_{i = 1}^m (x - `x_i`) using
+/// [synthetic division](https://en.wikipedia.org/wiki/Synthetic_division) method and saves the
+/// result into `p`. If the polynomials don't divide evenly, the remainder is ignored. Polynomial
+/// `p` is expected to be in the coefficient form, and the result will be in coefficient form as
+/// well.
+///
+/// This function is significantly faster than the generic `polynom::div()` function, using
+/// the coefficients of the divisor.
+///
+/// # Panics
+/// Panics if:
+/// * `roots.len()` is zero;
+/// * `p.len()` is smaller than or equal to `roots.len()`.
+///
+/// # Examples
+/// ```
+/// # use winter_math::polynom::*;
+/// # use winter_math::{fields::{f128::BaseElement}, FieldElement};
+/// // p(x) = x^3 - 7 * x + 6
+/// let mut p = [
+///     BaseElement::new(6),
+///     -BaseElement::new(7),
+///     BaseElement::new(0),
+///     BaseElement::new(1),
+/// ];
+///
+/// // divide by (x - 1) * (x - 2)
+/// let zeros = vec![BaseElement::new(1), BaseElement::new(2)];
+/// syn_div_roots_in_place(&mut p, &zeros);
+///
+/// // expected result = x + 3
+/// let expected = [
+///     BaseElement::new(3),
+///     BaseElement::new(1),
+///     BaseElement::ZERO,
+///     BaseElement::ZERO,
+/// ];
+///
+/// assert_eq!(expected, p);
+pub fn syn_div_roots_in_place<E>(p: &mut [E], roots: &[E])
+where
+    E: FieldElement,
+{
+    assert!(!roots.is_empty(), "divisor should contain at least one linear factor");
+    assert!(p.len() > roots.len(), "divisor degree cannot be greater than dividend size");
+
+    for root in roots {
+        let mut c = E::ZERO;
+        for coeff in p.iter_mut().rev() {
+            *coeff += *root * c;
+            mem::swap(coeff, &mut c);
+        }
+    }
+}
+
 // DEGREE INFERENCE
 // ================================================================================================
 
@@ -580,12 +602,7 @@ where
 /// assert_eq!(2, degree_of(&[BaseElement::ONE, BaseElement::new(2), BaseElement::new(3)]));
 /// assert_eq!(
 ///     2,
-///     degree_of(&[
-///         BaseElement::ONE,
-///         BaseElement::new(2),
-///         BaseElement::new(3),
-///         BaseElement::ZERO
-///     ])
+///     degree_of(&[BaseElement::ONE, BaseElement::new(2), BaseElement::new(3), BaseElement::ZERO])
 /// );
 /// ```
 pub fn degree_of<E>(poly: &[E]) -> usize
@@ -614,10 +631,7 @@ where
 /// assert_eq!(6, b.len());
 /// assert_eq!(a[..6], b);
 ///
-/// let a = vec![0u128, 0, 0, 0]
-///     .into_iter()
-///     .map(BaseElement::new)
-///     .collect::<Vec<_>>();
+/// let a = vec![0u128, 0, 0, 0].into_iter().map(BaseElement::new).collect::<Vec<_>>();
 /// let b = remove_leading_zeros(&a);
 /// assert_eq!(0, b.len());
 /// ```
@@ -633,13 +647,28 @@ where
     vec![]
 }
 
-// HELPER FUNCTIONS
-// ================================================================================================
-fn get_zero_roots<E: FieldElement>(xs: &[E]) -> Vec<E> {
+/// Returns the coefficients of polynomial given its roots.
+///
+/// # Examples
+/// ```
+/// # use winter_math::polynom::*;
+/// # use winter_math::{fields::{f128::BaseElement}, FieldElement};
+/// let xs = vec![1u128, 2].into_iter().map(BaseElement::new).collect::<Vec<_>>();
+///
+/// let mut expected_poly = vec![2u128, 3, 1].into_iter().map(BaseElement::new).collect::<Vec<_>>();
+/// expected_poly[1] *= -BaseElement::ONE;
+///
+/// let poly = poly_from_roots(&xs);
+/// assert_eq!(expected_poly, poly);
+/// ```
+pub fn poly_from_roots<E: FieldElement>(xs: &[E]) -> Vec<E> {
     let mut result = unsafe { utils::uninit_vector(xs.len() + 1) };
     fill_zero_roots(xs, &mut result);
     result
 }
+
+// HELPER FUNCTIONS
+// ================================================================================================
 
 fn fill_zero_roots<E: FieldElement>(xs: &[E], result: &mut [E]) {
     let mut n = result.len();

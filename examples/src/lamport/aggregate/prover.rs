@@ -3,14 +3,19 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
+#[cfg(feature = "concurrent")]
+use winterfell::iterators::*;
+use winterfell::{
+    crypto::MerkleTree, matrix::ColMatrix, AuxRandElements, CompositionPoly, CompositionPolyTrace,
+    ConstraintCompositionCoefficients, DefaultConstraintCommitment, DefaultConstraintEvaluator,
+    DefaultTraceLde, PartitionOptions, StarkDomain, TraceInfo, TracePolyTable, TraceTable,
+};
+
 use super::{
     get_power_series, rescue, BaseElement, DefaultRandomCoin, ElementHasher, FieldElement,
     LamportAggregateAir, PhantomData, ProofOptions, Prover, PublicInputs, Signature, StarkField,
-    TraceTable, CYCLE_LENGTH, NUM_HASH_ROUNDS, SIG_CYCLE_LENGTH, TRACE_WIDTH,
+    CYCLE_LENGTH, NUM_HASH_ROUNDS, SIG_CYCLE_LENGTH, TRACE_WIDTH,
 };
-
-#[cfg(feature = "concurrent")]
-use winterfell::iterators::*;
 
 // CONSTANTS
 // ================================================================================================
@@ -90,13 +95,20 @@ impl<H: ElementHasher> LamportAggregateProver<H> {
 
 impl<H: ElementHasher> Prover for LamportAggregateProver<H>
 where
-    H: ElementHasher<BaseField = BaseElement>,
+    H: ElementHasher<BaseField = BaseElement> + Sync,
 {
     type BaseField = BaseElement;
     type Air = LamportAggregateAir;
     type Trace = TraceTable<BaseElement>;
     type HashFn = H;
+    type VC = MerkleTree<H>;
     type RandomCoin = DefaultRandomCoin<Self::HashFn>;
+    type TraceLde<E: FieldElement<BaseField = Self::BaseField>> =
+        DefaultTraceLde<E, Self::HashFn, Self::VC>;
+    type ConstraintCommitment<E: FieldElement<BaseField = Self::BaseField>> =
+        DefaultConstraintCommitment<E, H, Self::VC>;
+    type ConstraintEvaluator<'a, E: FieldElement<BaseField = Self::BaseField>> =
+        DefaultConstraintEvaluator<'a, Self::Air, E>;
 
     fn get_pub_inputs(&self, _trace: &Self::Trace) -> PublicInputs {
         self.pub_inputs.clone()
@@ -104,6 +116,40 @@ where
 
     fn options(&self) -> &ProofOptions {
         &self.options
+    }
+
+    fn new_trace_lde<E: FieldElement<BaseField = Self::BaseField>>(
+        &self,
+        trace_info: &TraceInfo,
+        main_trace: &ColMatrix<Self::BaseField>,
+        domain: &StarkDomain<Self::BaseField>,
+        partition_option: PartitionOptions,
+    ) -> (Self::TraceLde<E>, TracePolyTable<E>) {
+        DefaultTraceLde::new(trace_info, main_trace, domain, partition_option)
+    }
+
+    fn new_evaluator<'a, E: FieldElement<BaseField = Self::BaseField>>(
+        &self,
+        air: &'a Self::Air,
+        aux_rand_elements: Option<AuxRandElements<E>>,
+        composition_coefficients: ConstraintCompositionCoefficients<E>,
+    ) -> Self::ConstraintEvaluator<'a, E> {
+        DefaultConstraintEvaluator::new(air, aux_rand_elements, composition_coefficients)
+    }
+
+    fn build_constraint_commitment<E: FieldElement<BaseField = Self::BaseField>>(
+        &self,
+        composition_poly_trace: CompositionPolyTrace<E>,
+        num_constraint_composition_columns: usize,
+        domain: &StarkDomain<Self::BaseField>,
+        partition_options: PartitionOptions,
+    ) -> (Self::ConstraintCommitment<E>, CompositionPoly<E>) {
+        DefaultConstraintCommitment::new(
+            composition_poly_trace,
+            num_constraint_composition_columns,
+            domain,
+            partition_options,
+        )
     }
 }
 
@@ -182,14 +228,8 @@ fn update_sig_verification_state(
         );
 
         // copy next set of private keys into the registers computing private key hashes
-        init_hash_state(
-            sec_key_1_hash,
-            &sig_info.key_schedule.sec_keys1[cycle_num + 1],
-        );
-        init_hash_state(
-            sec_key_2_hash,
-            &sig_info.key_schedule.sec_keys2[cycle_num + 1],
-        );
+        init_hash_state(sec_key_1_hash, &sig_info.key_schedule.sec_keys1[cycle_num + 1]);
+        init_hash_state(sec_key_2_hash, &sig_info.key_schedule.sec_keys2[cycle_num + 1]);
 
         // update message accumulator with the next set of message bits
         apply_message_acc(
@@ -212,8 +252,8 @@ fn apply_message_acc(
     let m0_bit = state[0];
     let m1_bit = state[1];
 
-    state[0] = BaseElement::from((m0 >> (cycle_num + 1)) & 1);
-    state[1] = BaseElement::from((m1 >> (cycle_num + 1)) & 1);
+    state[0] = BaseElement::new((m0 >> (cycle_num + 1)) & 1);
+    state[1] = BaseElement::new((m1 >> (cycle_num + 1)) & 1);
     state[2] += power_of_two * m0_bit;
     state[3] += power_of_two * m1_bit;
 }
@@ -260,11 +300,7 @@ fn build_sig_info(msg: &[BaseElement; 2], sig: &Signature) -> SignatureInfo {
     let m0 = msg[0].as_int();
     let m1 = msg[1].as_int();
     let key_schedule = build_key_schedule(m0, m1, sig);
-    SignatureInfo {
-        m0,
-        m1,
-        key_schedule,
-    }
+    SignatureInfo { m0, m1, key_schedule }
 }
 
 /// Transforms signature into 4 vectors of keys such that keys 0..127 and 127..254 end up in

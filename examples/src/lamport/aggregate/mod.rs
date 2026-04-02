@@ -3,18 +3,20 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
+use core::marker::PhantomData;
+use std::time::Instant;
+
+use tracing::{field, info_span};
+use winterfell::{
+    crypto::{DefaultRandomCoin, ElementHasher, MerkleTree},
+    math::{fields::f128::BaseElement, get_power_series, FieldElement, StarkField},
+    Proof, ProofOptions, Prover, Trace, VerifierError,
+};
+
 use super::{
     message_to_elements, rescue, Example, PrivateKey, Signature, CYCLE_LENGTH, NUM_HASH_ROUNDS,
 };
 use crate::{Blake3_192, Blake3_256, ExampleOptions, HashFunction, Sha3_256};
-use core::marker::PhantomData;
-use log::debug;
-use std::time::Instant;
-use winterfell::{
-    crypto::{DefaultRandomCoin, ElementHasher},
-    math::{fields::f128::BaseElement, get_power_series, log2, FieldElement, StarkField},
-    ProofOptions, Prover, StarkProof, Trace, TraceTable, VerifierError,
-};
 
 mod air;
 use air::{LamportAggregateAir, PublicInputs};
@@ -37,18 +39,15 @@ pub fn get_example(
     let (options, hash_fn) = options.to_proof_options(28, 8);
 
     match hash_fn {
-        HashFunction::Blake3_192 => Ok(Box::new(LamportAggregateExample::<Blake3_192>::new(
-            num_signatures,
-            options,
-        ))),
-        HashFunction::Blake3_256 => Ok(Box::new(LamportAggregateExample::<Blake3_256>::new(
-            num_signatures,
-            options,
-        ))),
-        HashFunction::Sha3_256 => Ok(Box::new(LamportAggregateExample::<Sha3_256>::new(
-            num_signatures,
-            options,
-        ))),
+        HashFunction::Blake3_192 => {
+            Ok(Box::new(LamportAggregateExample::<Blake3_192>::new(num_signatures, options)))
+        },
+        HashFunction::Blake3_256 => {
+            Ok(Box::new(LamportAggregateExample::<Blake3_256>::new(num_signatures, options)))
+        },
+        HashFunction::Sha3_256 => {
+            Ok(Box::new(LamportAggregateExample::<Sha3_256>::new(num_signatures, options)))
+        },
         _ => Err("The specified hash function cannot be used with this example.".to_string()),
     }
 }
@@ -63,10 +62,7 @@ pub struct LamportAggregateExample<H: ElementHasher> {
 
 impl<H: ElementHasher> LamportAggregateExample<H> {
     pub fn new(num_signatures: usize, options: ProofOptions) -> Self {
-        assert!(
-            num_signatures.is_power_of_two(),
-            "number of signatures must be a power of 2"
-        );
+        assert!(num_signatures.is_power_of_two(), "number of signatures must be a power of 2");
         // generate private/public key pairs for the specified number of signatures
         let mut private_keys = Vec::with_capacity(num_signatures);
         let mut public_keys = Vec::with_capacity(num_signatures);
@@ -75,7 +71,7 @@ impl<H: ElementHasher> LamportAggregateExample<H> {
             private_keys.push(PrivateKey::from_seed([i as u8; 32]));
             public_keys.push(private_keys[i].pub_key().to_elements());
         }
-        debug!(
+        println!(
             "Generated {} private-public key pairs in {} ms",
             num_signatures,
             now.elapsed().as_millis()
@@ -90,11 +86,7 @@ impl<H: ElementHasher> LamportAggregateExample<H> {
             signatures.push(private_key.sign(msg.as_bytes()));
             messages.push(message_to_elements(msg.as_bytes()));
         }
-        debug!(
-            "Signed {} messages in {} ms",
-            num_signatures,
-            now.elapsed().as_millis()
-        );
+        println!("Signed {} messages in {} ms", num_signatures, now.elapsed().as_millis());
 
         // verify signature
         let now = Instant::now();
@@ -105,11 +97,7 @@ impl<H: ElementHasher> LamportAggregateExample<H> {
             let msg = format!("test message {i}");
             assert!(pk.verify(msg.as_bytes(), signature));
         }
-        debug!(
-            "Verified {} signature in {} ms",
-            num_signatures,
-            now.elapsed().as_millis()
-        );
+        println!("Verified {} signature in {} ms", num_signatures, now.elapsed().as_millis());
 
         LamportAggregateExample {
             options,
@@ -126,49 +114,56 @@ impl<H: ElementHasher> LamportAggregateExample<H> {
 
 impl<H: ElementHasher> Example for LamportAggregateExample<H>
 where
-    H: ElementHasher<BaseField = BaseElement>,
+    H: ElementHasher<BaseField = BaseElement> + Sync,
 {
-    fn prove(&self) -> StarkProof {
+    fn prove(&self) -> Proof {
         // generate the execution trace
-        debug!(
-            "Generating proof for verifying {} Lamport+ signatures \n\
-            ---------------------",
-            self.signatures.len(),
-        );
+        println!("Generating proof for verifying {} Lamport+ signatures", self.signatures.len());
 
         // create a prover
         let prover =
             LamportAggregateProver::<H>::new(&self.pub_keys, &self.messages, self.options.clone());
 
-        let now = Instant::now();
-        let trace = prover.build_trace(&self.messages, &self.signatures);
-        let trace_length = trace.length();
-        debug!(
-            "Generated execution trace of {} registers and 2^{} steps in {} ms",
-            trace.width(),
-            log2(trace_length),
-            now.elapsed().as_millis()
-        );
+        // generate execution trace
+        let trace =
+            info_span!("generate_execution_trace", num_cols = TRACE_WIDTH, steps = field::Empty)
+                .in_scope(|| {
+                    let trace = prover.build_trace(&self.messages, &self.signatures);
+                    tracing::Span::current().record("steps", trace.length());
+                    trace
+                });
 
         // generate the proof
         prover.prove(trace).unwrap()
     }
 
-    fn verify(&self, proof: StarkProof) -> Result<(), VerifierError> {
+    fn verify(&self, proof: Proof) -> Result<(), VerifierError> {
         let pub_inputs = PublicInputs {
             pub_keys: self.pub_keys.clone(),
             messages: self.messages.clone(),
         };
-        winterfell::verify::<LamportAggregateAir, H, DefaultRandomCoin<H>>(proof, pub_inputs)
+        let acceptable_options =
+            winterfell::AcceptableOptions::OptionSet(vec![proof.options().clone()]);
+        winterfell::verify::<LamportAggregateAir, H, DefaultRandomCoin<H>, MerkleTree<H>>(
+            proof,
+            pub_inputs,
+            &acceptable_options,
+        )
     }
 
-    fn verify_with_wrong_inputs(&self, proof: StarkProof) -> Result<(), VerifierError> {
+    fn verify_with_wrong_inputs(&self, proof: Proof) -> Result<(), VerifierError> {
         let mut pub_keys = self.pub_keys.clone();
         pub_keys.swap(0, 1);
         let pub_inputs = PublicInputs {
             pub_keys,
             messages: self.messages.clone(),
         };
-        winterfell::verify::<LamportAggregateAir, H, DefaultRandomCoin<H>>(proof, pub_inputs)
+        let acceptable_options =
+            winterfell::AcceptableOptions::OptionSet(vec![proof.options().clone()]);
+        winterfell::verify::<LamportAggregateAir, H, DefaultRandomCoin<H>, MerkleTree<H>>(
+            proof,
+            pub_inputs,
+            &acceptable_options,
+        )
     }
 }

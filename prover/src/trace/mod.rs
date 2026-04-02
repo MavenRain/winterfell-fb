@@ -3,12 +3,13 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
-use super::{matrix::MultiColumnIter, ColMatrix};
-use air::{Air, AuxTraceRandElements, EvaluationFrame, TraceInfo, TraceLayout};
+use air::{Air, AuxRandElements, EvaluationFrame, TraceInfo};
 use math::{polynom, FieldElement, StarkField};
 
+use super::ColMatrix;
+
 mod trace_lde;
-pub use trace_lde::TraceLde;
+pub use trace_lde::{DefaultTraceLde, TraceLde};
 
 mod poly_table;
 pub use poly_table::TracePolyTable;
@@ -16,11 +17,17 @@ pub use poly_table::TracePolyTable;
 mod trace_table;
 pub use trace_table::{TraceTable, TraceTableFragment};
 
-mod commitment;
-pub use commitment::TraceCommitment;
-
 #[cfg(test)]
 mod tests;
+
+// AUX TRACE WITH METADATA
+// ================================================================================================
+
+/// Holds the auxiliary trace, the random elements used when generating the auxiliary trace.
+pub struct AuxTraceWithMetadata<E: FieldElement> {
+    pub aux_trace: ColMatrix<E>,
+    pub aux_rand_elements: AuxRandElements<E>,
+}
 
 // TRACE TRAIT
 // ================================================================================================
@@ -46,31 +53,11 @@ pub trait Trace: Sized {
 
     // REQUIRED METHODS
     // --------------------------------------------------------------------------------------------
-
-    /// Returns a description of how columns of this trace are arranged into trace segments.
-    fn layout(&self) -> &TraceLayout;
-
-    /// Returns the number of rows in this trace.
-    fn length(&self) -> usize;
-
-    /// Returns metadata associated with this trace.
-    fn meta(&self) -> &[u8];
+    /// Returns trace info for this trace.
+    fn info(&self) -> &TraceInfo;
 
     /// Returns a reference to a [Matrix] describing the main segment of this trace.
     fn main_segment(&self) -> &ColMatrix<Self::BaseField>;
-
-    /// Builds and returns the next auxiliary trace segment. If there are no more segments to
-    /// build (i.e., the trace is complete), None is returned.
-    ///
-    /// The `aux_segments` slice contains a list of auxiliary trace segments built as a result
-    /// of prior invocations of this function. Thus, for example, on the first invocation,
-    /// `aux_segments` will be empty; on the second invocation, it will contain a single matrix
-    /// (the one built during the first invocation) etc.
-    fn build_aux_segment<E: FieldElement<BaseField = Self::BaseField>>(
-        &mut self,
-        aux_segments: &[ColMatrix<E>],
-        rand_elements: &[E],
-    ) -> Option<ColMatrix<E>>;
 
     /// Reads an evaluation frame from the main trace segment at the specified row.
     fn read_main_frame(&self, row_idx: usize, frame: &mut EvaluationFrame<Self::BaseField>);
@@ -78,42 +65,36 @@ pub trait Trace: Sized {
     // PROVIDED METHODS
     // --------------------------------------------------------------------------------------------
 
-    /// Returns trace info for this trace.
-    fn get_info(&self) -> TraceInfo {
-        TraceInfo::new_multi_segment(self.layout().clone(), self.length(), self.meta().to_vec())
+    /// Returns the number of rows in this trace.
+    fn length(&self) -> usize {
+        self.info().length()
     }
 
     /// Returns the number of columns in the main segment of this trace.
     fn main_trace_width(&self) -> usize {
-        self.layout().main_trace_width()
+        self.info().main_trace_width()
     }
 
-    /// Returns the number of columns in all auxiliary trace segments.
+    /// Returns the number of columns in the auxiliary trace segment.
     fn aux_trace_width(&self) -> usize {
-        self.layout().aux_trace_width()
+        self.info().aux_segment_width()
     }
 
-    // VALIDATION
-    // --------------------------------------------------------------------------------------------
     /// Checks if this trace is valid against the specified AIR, and panics if not.
     ///
     /// NOTE: this is a very expensive operation and is intended for use only in debug mode.
-    fn validate<A, E>(
-        &self,
-        air: &A,
-        aux_segments: &[ColMatrix<E>],
-        aux_rand_elements: &AuxTraceRandElements<E>,
-    ) where
+    fn validate<A, E>(&self, air: &A, aux_trace_with_metadata: Option<&AuxTraceWithMetadata<E>>)
+    where
         A: Air<BaseField = Self::BaseField>,
         E: FieldElement<BaseField = Self::BaseField>,
     {
         // make sure the width align; if they don't something went terribly wrong
         assert_eq!(
             self.main_trace_width(),
-            air.trace_layout().main_trace_width(),
+            air.trace_info().main_trace_width(),
             "inconsistent trace width: expected {}, but was {}",
             self.main_trace_width(),
-            air.trace_layout().main_trace_width(),
+            air.trace_info().main_trace_width(),
         );
 
         // --- 1. make sure the assertions are valid ----------------------------------------------
@@ -131,31 +112,23 @@ pub trait Trace: Sized {
             });
         }
 
-        // then, check assertions against auxiliary trace segments
-        for assertion in air.get_aux_assertions(aux_rand_elements) {
-            // find which segment the assertion is for and remap assertion column index to the
-            // column index in the context of this segment
-            let mut column_idx = assertion.column();
-            let mut segment_idx = 0;
-            for i in 0..self.layout().num_aux_segments() {
-                let segment_width = self.layout().get_aux_segment_width(i);
-                if column_idx < segment_width {
-                    segment_idx = i;
-                    break;
-                }
-                column_idx -= segment_width;
-            }
+        // then, check assertions against the auxiliary trace segment
+        if let Some(aux_trace_with_metadata) = aux_trace_with_metadata {
+            let aux_trace = &aux_trace_with_metadata.aux_trace;
+            let aux_rand_elements = &aux_trace_with_metadata.aux_rand_elements;
 
-            // get the matrix and verify the assertion against it
-            assertion.apply(self.length(), |step, value| {
-                assert!(
-                    value == aux_segments[segment_idx].get(column_idx, step),
-                    "trace does not satisfy assertion aux_trace({}, {}) == {}",
-                    assertion.column(),
-                    step,
-                    value
-                );
-            });
+            for assertion in air.get_aux_assertions(aux_rand_elements) {
+                // get the matrix and verify the assertion against it
+                assertion.apply(self.length(), |step, value| {
+                    assert!(
+                        value == aux_trace.get(assertion.column(), step),
+                        "trace does not satisfy assertion aux_trace({}, {}) == {}",
+                        assertion.column(),
+                        step,
+                        value
+                    );
+                });
+            }
         }
 
         // --- 2. make sure this trace satisfies all transition constraints -----------------------
@@ -198,10 +171,15 @@ pub trait Trace: Sized {
                 );
             }
 
-            // evaluate transition constraints for auxiliary trace segments (if any) and make
+            // evaluate transition constraints for the auxiliary trace segment (if any) and make
             // sure they all evaluate to zeros
             if let Some(ref mut aux_frame) = aux_frame {
-                read_aux_frame(aux_segments, step, aux_frame);
+                let aux_trace_with_metadata =
+                    aux_trace_with_metadata.expect("expected aux trace to be present");
+                let aux_trace = &aux_trace_with_metadata.aux_trace;
+                let aux_rand_elements = &aux_trace_with_metadata.aux_rand_elements;
+
+                read_aux_frame(aux_trace, step, aux_frame);
                 air.evaluate_aux_transition(
                     &main_frame,
                     aux_frame,
@@ -226,22 +204,24 @@ pub trait Trace: Sized {
 // HELPER FUNCTIONS
 // ================================================================================================
 
-/// Reads an evaluation frame from the set of provided auxiliary segments. This expects that
-/// `aux_segments` contains at least one entry.
+/// Reads an evaluation frame from the provided auxiliary segment.
 ///
 /// This is probably not the most efficient implementation, but since we call this function only
 /// for trace validation purposes (which is done in debug mode only), we don't care all that much
 /// about its performance.
-fn read_aux_frame<E>(aux_segments: &[ColMatrix<E>], row_idx: usize, frame: &mut EvaluationFrame<E>)
+fn read_aux_frame<E>(aux_segment: &ColMatrix<E>, row_idx: usize, frame: &mut EvaluationFrame<E>)
 where
     E: FieldElement,
 {
-    for (column, current_value) in MultiColumnIter::new(aux_segments).zip(frame.current_mut()) {
-        *current_value = column[row_idx];
+    for (current_frame_cell, aux_segment_col) in
+        frame.current_mut().iter_mut().zip(aux_segment.columns())
+    {
+        *current_frame_cell = aux_segment_col[row_idx];
     }
 
-    let next_row_idx = (row_idx + 1) % aux_segments[0].num_rows();
-    for (column, next_value) in MultiColumnIter::new(aux_segments).zip(frame.next_mut()) {
-        *next_value = column[next_row_idx];
+    let next_row_idx = (row_idx + 1) % aux_segment.num_rows();
+    for (next_frame_cell, aux_segment_col) in frame.next_mut().iter_mut().zip(aux_segment.columns())
+    {
+        *next_frame_cell = aux_segment_col[next_row_idx];
     }
 }

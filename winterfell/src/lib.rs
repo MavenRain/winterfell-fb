@@ -15,47 +15,47 @@
 //! To generate a proof that a computation was executed correctly, you'll need to do the
 //! following:
 //!
-//! 1. Define an *algebraic intermediate representation* (AIR) for your computation. This can
-//!    be done by implementing [Air] trait.
+//! 1. Define an *algebraic intermediate representation* (AIR) for your computation. This can be
+//!    done by implementing [Air] trait.
 //! 2. Define an execution trace for your computation. This can be done by implementing [Trace]
-//!    trait. Alternatively, you can use [TraceTable] struct which already implements [Trace]
+//!    trait. Alternatively, you can use the [TraceTable] struct which already implements [Trace]
 //!    trait in cases when this generic implementation works for your use case.
 //! 3. Execute your computation and record its execution trace.
 //! 4. Define your prover by implementing [Prover] trait. Then execute [Prover::prove()] function
 //!    passing the trace generated in the previous step into it as a parameter. The function will
-//!    return a instance of [StarkProof].
+//!    return an instance of [Proof].
 //!
-//! This `StarkProof` can be serialized and sent to a STARK verifier for verification. The size
+//! This `Proof` can be serialized and sent to a STARK verifier for verification. The size
 //! of proof depends on the specifics of a given computation, but for most computations it should
 //! be in the range between 15 KB (for very small computations) and 300 KB (for very large
 //! computations).
 //!
 //! Proof generation time is also highly dependent on the specifics of a given computation, but
-//! also depends on the capabilities of the machine used to generate the proofs (i.e. on number
+//! also depends on the capabilities of the machine used to generate the proofs (i.e. on the number
 //! of CPU cores and memory bandwidth).
 //!
-//! When the crate is compiled with `concurrent` feature enabled, proof generation will be
+//! When the crate is compiled with the `concurrent` feature enabled, proof generation will be
 //! performed in multiple threads (usually, as many threads as there are logical cores on the
 //! machine). The number of threads can be configured via `RAYON_NUM_THREADS` environment
 //! variable.
 //!
 //! ## Prof verification
-//! To verify a [StarkProof] generated as described in the previous sections, you'll need to
+//! To verify a [Proof] generated as described in the previous sections, you'll need to
 //! do the following:
 //!
-//! 1. Define an *algebraic intermediate representation* (AIR) for you computation. This AIR
-//!    must be the same as the one used during proof generation process.
-//! 2. Execute [verify()] function and supply the AIR of your computation together with the
-//!    [StarkProof] and related public inputs as parameters.
+//! 1. Define an *algebraic intermediate representation* (AIR) for you computation. This AIR must be
+//!    the same as the one used during the proof generation process.
+//! 2. Execute [verify()] function and supply the AIR of your computation together with the [Proof]
+//!    and related public inputs as parameters.
 //!
 //! Proof verification is extremely fast and is nearly independent of the complexity of the
-//! computation being verified. In vast majority of cases proofs can be verified in 3 - 5 ms
+//! computation being verified. In the vast majority of cases, proofs can be verified in 3 - 5 ms
 //! on a modern mid-range laptop CPU (using a single core).
 //!
 //! There is one exception, however: if a computation requires a lot of `sequence` assertions
 //! (see [Assertion] for more info), the verification time will grow linearly in the number of
 //! asserted values. But for the impact to be noticeable, the number of asserted values would
-//! need to be in tens of thousands. And even for hundreds of thousands of asserted values, the
+//! need to be in tens of thousands. And even for hundreds of thousands of assorted values, the
 //! verification time should not exceed 50 ms.
 //!
 //! # Examples
@@ -68,19 +68,19 @@
 //! use winterfell::math::{fields::f128::BaseElement, FieldElement};
 //!
 //! fn do_work(start: BaseElement, n: usize) -> BaseElement {
-//!    let mut result = start;
-//!    for _ in 1..n {
-//!        result = result.exp(3) + BaseElement::new(42);
-//!    }
-//!    result
+//!     let mut result = start;
+//!     for _ in 1..n {
+//!         result = result.exp(3) + BaseElement::new(42);
+//!     }
+//!     result
 //! }
 //! ```
 //!
 //! This computation starts with an element in a finite field and then, for the specified number
-//! of steps, cubes the element and adds value `42` to it.
+//! of steps, cubes the element, and adds value `42` to it.
 //!
 //! Suppose, we run this computation for a million steps and get some result. Using STARKs we can
-//! prove that we did the work correctly without requiring any verifying party to re-execute the
+//! Prove that we did the work correctly without requiring any verifying party to re-execute the
 //! computation. Here is how to do it:
 //!
 //! First, we need to define an *execution trace* for our computation. This trace should capture
@@ -99,7 +99,7 @@
 //! | ...       |
 //! | 1,048,575 | 247770943907079986105389697876176586605 |
 //!
-//! To record the trace, we'll use the [TraceTable] struct. The function below, is just a
+//! To record the trace, we'll use the [TraceTable] struct. The function below is just a
 //! modified version of the `do_work()` function which records every intermediate state of the
 //! computation in the [TraceTable] struct:
 //!
@@ -135,23 +135,24 @@
 //! This process is usually called *arithmetization*. We do this by implementing the [Air] trait.
 //! At the high level, the code below does three things:
 //!
-//! 1. Defines what the public inputs for our computation should look like. These inputs are
-//!    called "public" because they must be known to both, the prover and the verifier.
-//! 2. Defines a transition function with a single transition constraint. This transition
-//!    constraint must evaluate to zero for all valid state transitions, and to non-zero for any
-//!    invalid state transition. The degree of this constraint is 3 (see more about constraint
-//!    degrees "Constraint degrees" section of [Air] trait documentation).
-//! 3. Define two assertions against an execution trace of our computation. These assertions tie
-//!    a specific set of public inputs to a specific execution trace (see more about assertions
-//!    "Trace assertions" section of [Air] trait documentation).
+//! 1. Defines what the public inputs for our computation should look like. These inputs are called
+//!    "public" because they must be known to both, the prover and the verifier.
+//! 2. Defines a transition function with a single transition constraint. This transition constraint
+//!    must evaluate to zero for all valid state transitions, and to non-zero for any invalid state
+//!    transition. The degree of this constraint is 3 (see more about constraint degrees "Constraint
+//!    degrees" section of [Air] trait documentation).
+//! 3. Define two assertions against an execution trace of our computation. These assertions tie a
+//!    specific set of public inputs to a specific execution trace (see more about assertions "Trace
+//!    assertions" section of [Air] trait documentation).
 //!
 //! Here is the actual code:
 //!
 //! ```no_run
 //! use winterfell::{
+//!     crypto::{hashers::Blake3_256, DefaultRandomCoin, MerkleTree},
 //!     math::{fields::f128::BaseElement, FieldElement, ToElements},
-//!     Air, AirContext, Assertion, ByteWriter, EvaluationFrame, ProofOptions, TraceInfo,
-//!     TransitionConstraintDegree, crypto::{hashers::Blake3_256, DefaultRandomCoin},
+//!     Air, AirContext, Assertion, EvaluationFrame, ProofOptions, TraceInfo,
+//!     TransitionConstraintDegree,
 //! };
 //!
 //! // Public inputs for our computation will consist of the starting value and the end result.
@@ -177,7 +178,7 @@
 //! }
 //!
 //! impl Air for WorkAir {
-//!     // First, we'll specify which finite field to use for our computation, and also how
+//!     // We'll specify which finite field to use for our computation, and also how
 //!     // the public inputs must look like.
 //!     type BaseField = BaseElement;
 //!     type PublicInputs = PublicInputs;
@@ -220,7 +221,7 @@
 //!         result: &mut [E],
 //!     ) {
 //!         // First, we'll read the current state, and use it to compute the expected next state
-//!         let current_state = &frame.current()[0];
+//!         let current_state = frame.current()[0];
 //!         let next_state = current_state.exp(3u32.into()) + E::from(42u32);
 //!
 //!         // Then, we'll subtract the expected next state from the actual next state; this will
@@ -255,13 +256,17 @@
 //!
 //! ```no_run
 //! use winterfell::{
+//!     crypto::{hashers::Blake3_256, DefaultRandomCoin, MerkleTree},
 //!     math::{fields::f128::BaseElement, FieldElement, ToElements},
-//!     ProofOptions, Prover, Trace, TraceTable, crypto::{hashers::Blake3_256, DefaultRandomCoin}
+//!     matrix::ColMatrix,
+//!     CompositionPoly, CompositionPolyTrace, DefaultConstraintCommitment,
+//!     DefaultTraceLde, ProofOptions, Prover, StarkDomain, Trace,
+//!     TracePolyTable, TraceTable,
 //! };
 //!
 //! # use winterfell::{
-//! #   Air, AirContext, Assertion, ByteWriter, EvaluationFrame, TraceInfo,
-//! #   TransitionConstraintDegree,
+//! #   Air, AirContext, Assertion, AuxRandElements, ByteWriter, DefaultConstraintEvaluator,
+//! #   EvaluationFrame, PartitionOptions, TraceInfo, TransitionConstraintDegree,
 //! # };
 //! #
 //! # pub struct PublicInputs {
@@ -331,15 +336,22 @@
 //!     }
 //! }
 //!
-//! // When implementing Prover trait we set the `Air` associated type to the AIR of the
+//! // When implementing the Prover trait we set the `Air` associated type to the AIR of the
 //! // computation we defined previously, and set the `Trace` associated type to `TraceTable`
-//! // struct as we don't need to define a custom trace for our computation.
+//! // struct as we don't need to define a custom trace for our computation. For other
+//! // associated types, we'll use default implementation provided by Winterfell.
 //! impl Prover for WorkProver {
 //!     type BaseField = BaseElement;
 //!     type Air = WorkAir;
 //!     type Trace = TraceTable<Self::BaseField>;
 //!     type HashFn = Blake3_256<Self::BaseField>;
+//!     type VC = MerkleTree<Self::HashFn>;
 //!     type RandomCoin = DefaultRandomCoin<Self::HashFn>;
+//!     type TraceLde<E: FieldElement<BaseField = Self::BaseField>> = DefaultTraceLde<E, Self::HashFn, Self::VC>;
+//!     type ConstraintCommitment<E: FieldElement<BaseField = Self::BaseField>> =
+//!         DefaultConstraintCommitment<E, Self::HashFn, Self::VC>;
+//!     type ConstraintEvaluator<'a, E: FieldElement<BaseField = Self::BaseField>> =
+//!         DefaultConstraintEvaluator<'a, Self::Air, E>;
 //!
 //!     // Our public inputs consist of the first and last value in the execution trace.
 //!     fn get_pub_inputs(&self, trace: &Self::Trace) -> PublicInputs {
@@ -353,6 +365,40 @@
 //!     fn options(&self) -> &ProofOptions {
 //!         &self.options
 //!     }
+//!
+//!     fn new_trace_lde<E: FieldElement<BaseField = Self::BaseField>>(
+//!         &self,
+//!         trace_info: &TraceInfo,
+//!         main_trace: &ColMatrix<Self::BaseField>,
+//!         domain: &StarkDomain<Self::BaseField>,
+//!         partition_option: PartitionOptions,
+//!     ) -> (Self::TraceLde<E>, TracePolyTable<E>) {
+//!         DefaultTraceLde::new(trace_info, main_trace, domain, partition_option)
+//!     }
+//!
+//!     fn build_constraint_commitment<E: FieldElement<BaseField = Self::BaseField>>(
+//!         &self,
+//!         composition_poly_trace: CompositionPolyTrace<E>,
+//!         num_constraint_composition_columns: usize,
+//!         domain: &StarkDomain<Self::BaseField>,
+//!         partition_options: PartitionOptions,
+//!     ) -> (Self::ConstraintCommitment<E>, CompositionPoly<E>) {
+//!         DefaultConstraintCommitment::new(
+//!             composition_poly_trace,
+//!             num_constraint_composition_columns,
+//!             domain,
+//!             partition_options,
+//!         )
+//!     }
+//!
+//!     fn new_evaluator<'a, E: FieldElement<BaseField = Self::BaseField>>(
+//!         &self,
+//!         air: &'a Self::Air,
+//!         aux_rand_elements: Option<AuxRandElements<E>>,
+//!         composition_coefficients: winterfell::ConstraintCompositionCoefficients<E>,
+//!     ) -> Self::ConstraintEvaluator<'a, E> {
+//!         DefaultConstraintEvaluator::new(air, aux_rand_elements, composition_coefficients)
+//!     }
 //! }
 //! ```
 //!
@@ -360,15 +406,18 @@
 //!
 //! In the code below, we will execute our computation and get the result together with the proof
 //! that the computation was executed correctly. Then, we will use this proof (together with the
-//! public inputs) to verify that we did in fact execute the computation and got the claimed
+//! public inputs) to verify that we did execute the computation and got the claimed
 //! result.
 //!
 //! ```
 //! # use winterfell::{
+//! #    crypto::{hashers::Blake3_256, DefaultRandomCoin, MerkleTree},
 //! #    math::{fields::f128::BaseElement, FieldElement, ToElements},
-//! #    Air, AirContext, Assertion, ByteWriter, EvaluationFrame, TraceInfo,
-//! #    TransitionConstraintDegree, TraceTable, FieldExtension, Prover, ProofOptions,
-//! #    StarkProof, Trace, crypto::{hashers::Blake3_256, DefaultRandomCoin},
+//! #    matrix::ColMatrix,
+//! #    Air, AirContext, Assertion, AuxRandElements, ByteWriter, BatchingMethod, CompositionPoly,
+//! #    CompositionPolyTrace, DefaultConstraintEvaluator, DefaultConstraintCommitment, DefaultTraceLde,
+//! #    EvaluationFrame, TraceInfo, TransitionConstraintDegree, TraceTable, FieldExtension,
+//! #    PartitionOptions, Prover, ProofOptions, StarkDomain, Proof, Trace, TracePolyTable,
 //! # };
 //! #
 //! # pub fn build_do_work_trace(start: BaseElement, n: usize) -> TraceTable<BaseElement> {
@@ -456,7 +505,13 @@
 //! #    type Air = WorkAir;
 //! #    type Trace = TraceTable<Self::BaseField>;
 //! #    type HashFn = Blake3_256<Self::BaseField>;
+//! #    type VC = MerkleTree<Self::HashFn>;
 //! #    type RandomCoin = DefaultRandomCoin<Self::HashFn>;
+//! #    type TraceLde<E: FieldElement<BaseField = Self::BaseField>> = DefaultTraceLde<E, Self::HashFn, Self::VC>;
+//! #    type ConstraintCommitment<E: FieldElement<BaseField = Self::BaseField>> =
+//! #        DefaultConstraintCommitment<E, Self::HashFn, Self::VC>;
+//! #    type ConstraintEvaluator<'a, E: FieldElement<BaseField = Self::BaseField>> =
+//! #        DefaultConstraintEvaluator<'a, Self::Air, E>;
 //! #
 //! #    fn get_pub_inputs(&self, trace: &Self::Trace) -> PublicInputs {
 //! #        let last_step = trace.length() - 1;
@@ -469,6 +524,41 @@
 //! #    fn options(&self) -> &ProofOptions {
 //! #        &self.options
 //! #    }
+//! #
+//! #    fn new_trace_lde<E: FieldElement<BaseField = Self::BaseField>>(
+//! #        &self,
+//! #        trace_info: &TraceInfo,
+//! #        main_trace: &ColMatrix<Self::BaseField>,
+//! #        domain: &StarkDomain<Self::BaseField>,
+//! #        partition_option: PartitionOptions,
+//! #    ) -> (Self::TraceLde<E>, TracePolyTable<E>) {
+//! #        DefaultTraceLde::new(trace_info, main_trace, domain, partition_option)
+//! #    }
+//! #
+//! #    fn build_constraint_commitment<E: FieldElement<BaseField = Self::BaseField>>(
+//! #        &self,
+//! #        composition_poly_trace: CompositionPolyTrace<E>,
+//! #        num_constraint_composition_columns: usize,
+//! #        domain: &StarkDomain<Self::BaseField>,
+//! #        partition_options: PartitionOptions,
+//! #    ) -> (Self::ConstraintCommitment<E>, CompositionPoly<E>) {
+//! #        DefaultConstraintCommitment::new(
+//! #            composition_poly_trace,
+//! #            num_constraint_composition_columns,
+//! #            domain,
+//! #            partition_options,
+//! #        )
+//! #    }
+//! #
+//! #    fn new_evaluator<'a, E: FieldElement<BaseField = Self::BaseField>>(
+//! #        &self,
+//! #        air: &'a Self::Air,
+//! #        aux_rand_elements: Option<AuxRandElements<E>>,
+//! #        composition_coefficients: winterfell::ConstraintCompositionCoefficients<E>,
+//! #    ) -> Self::ConstraintEvaluator<'a, E> {
+//! #        DefaultConstraintEvaluator::new(air, aux_rand_elements, composition_coefficients)
+//! #    }
+//! #
 //! #  }
 //! #
 //! // We'll just hard-code the parameters here for this example. We'll also just run the
@@ -488,19 +578,26 @@
 //!     FieldExtension::None,
 //!     8,  // FRI folding factor
 //!     31, // FRI max remainder polynomial degree
+//!     BatchingMethod::Linear, // method of batching used in computing constraint composition polynomial
+//!     BatchingMethod::Linear, // method of batching used in computing DEEP polynomial
 //! );
 //!
 //! // Instantiate the prover and generate the proof.
 //! let prover = WorkProver::new(options);
 //! let proof = prover.prove(trace).unwrap();
 //!
+//! // The verifier will accept proofs with parameters which guarantee 95 bits or more of
+//! // conjectured security
+//! let min_opts = winterfell::AcceptableOptions::MinConjecturedSecurity(95);
+//!
 //! // Verify the proof. The number of steps and options are encoded in the proof itself,
 //! // so we don't need to pass them explicitly to the verifier.
 //! let pub_inputs = PublicInputs { start, result };
 //! assert!(winterfell::verify::<WorkAir,
 //!                              Blake3_256<BaseElement>,
-//!                              DefaultRandomCoin<Blake3_256<BaseElement>>
-//!                             >(proof, pub_inputs).is_ok());
+//!                              DefaultRandomCoin<Blake3_256<BaseElement>>,
+//!                              MerkleTree<Blake3_256<BaseElement>>
+//!                             >(proof, pub_inputs, &min_opts).is_ok());
 //! ```
 //!
 //! That's all there is to it!
@@ -515,9 +612,9 @@
 //! * STARKs vs. SNARKs: [A Cambrian Explosion of Crypto Proofs](https://nakamoto.com/cambrian-explosion-of-crypto-proofs/)
 //!
 //! Vitalik Buterin's blog series on zk-STARKs:
-//! * [STARKs, part 1: Proofs with Polynomials](https://vitalik.ca/general/2017/11/09/starks_part_1.html)
-//! * [STARKs, part 2: Thank Goodness it's FRI-day](https://vitalik.ca/general/2017/11/22/starks_part_2.html)
-//! * [STARKs, part 3: Into the Weeds](https://vitalik.ca/general/2018/07/21/starks_part_3.html)
+//! * [STARKs, part 1: Proofs with Polynomials](https://vitalik.eth.limo/general/2017/11/09/starks_part_1.html)
+//! * [STARKs, part 2: Thank Goodness it's FRI-day](https://vitalik.eth.limo/general/2017/11/22/starks_part_2.html)
+//! * [STARKs, part 3: Into the Weeds](https://vitalik.eth.limo/general/2018/07/21/starks_part_3.html)
 //!
 //! StarkWare's STARK Math blog series:
 //! * [STARK Math: The Journey Begins](https://medium.com/starkware/stark-math-the-journey-begins-51bd2b063c71)
@@ -526,14 +623,19 @@
 //! * [Low Degree Testing](https://medium.com/starkware/low-degree-testing-f7614f5172db)
 //! * [A Framework for Efficient STARKs](https://medium.com/starkware/a-framework-for-efficient-starks-19608ba06fbe)
 
-#![cfg_attr(not(feature = "std"), no_std)]
+#![no_std]
 
+#[cfg(test)]
+extern crate std;
+
+pub use air::{AuxRandElements, BatchingMethod, PartitionOptions};
 pub use prover::{
-    crypto, iterators, math, Air, AirContext, Assertion, AuxTraceRandElements, BoundaryConstraint,
-    BoundaryConstraintGroup, ByteReader, ByteWriter, ColMatrix, ConstraintCompositionCoefficients,
-    ConstraintDivisor, DeepCompositionCoefficients, Deserializable, DeserializationError,
-    EvaluationFrame, FieldExtension, ProofOptions, Prover, ProverError, Serializable, SliceReader,
-    StarkProof, Trace, TraceInfo, TraceLayout, TraceTable, TraceTableFragment,
-    TransitionConstraintDegree, TransitionConstraintGroup,
+    crypto, iterators, math, matrix, Air, AirContext, Assertion, AuxTraceWithMetadata,
+    BoundaryConstraint, BoundaryConstraintGroup, CompositionPoly, CompositionPolyTrace,
+    ConstraintCompositionCoefficients, ConstraintDivisor, ConstraintEvaluator,
+    DeepCompositionCoefficients, DefaultConstraintCommitment, DefaultConstraintEvaluator,
+    DefaultTraceLde, EvaluationFrame, FieldExtension, Proof, ProofOptions, Prover, ProverError,
+    StarkDomain, Trace, TraceInfo, TraceLde, TracePolyTable, TraceTable, TraceTableFragment,
+    TransitionConstraintDegree,
 };
-pub use verifier::{verify, VerifierError};
+pub use verifier::{verify, AcceptableOptions, ByteWriter, VerifierError};

@@ -1,5 +1,151 @@
 # Changelog
 
+## 0.13.1 (2025-07-19)
+
+- Fixed a panic in `rand_vector` when `n == 0` (#394).
+
+## 0.13.0 (2025-06-13)
+
+- [BREAKING] Switched to absorbing OOD evaluations only once into the transcript (#382).
+- Fixed incorrect buffer length check in slice reader impl (#383).
+- Updated MSRV to 1.87.
+
+## 0.12.3 (2025-05-30) - `air`, `prover`, and `verifier` crates only
+
+- Added Horner-type batching method (#378).
+
+## 0.12.2 (2025-03-19) - `fri`, `prover`, and `verifier` crates only
+
+- Commit to coefficients of FRI remainder polynomial in reverse order (#373).
+
+## 0.12.1 (2025-02-12) - `air` crate only
+- Fixed `Context` struct serialization.
+
+## 0.12.0 (2025-02-08)
+- [BREAKING] Added security estimate in unique decoding regime  (#356).
+- [BREAKING] Added option for algebraic batching to build DEEP polynomial (#357).
+- [BREAKING] Updated serialization logic of the OOD frame (#358).
+- [BREAKING] Removed GKR-related code (#359).
+- Update security estimator to take batching method into account (#361).
+- [BREAKING] Added option for algebraic batching to build constraint composition polynomial (#363).
+- Updated minimum supported Rust version to 1.84.
+
+## 0.11.0 (2024-11-24)
+- [BREAKING] Made the prover generic over the `ConstraintCommitment` type (#343).
+
+## 0.10.3 (2024-11-19) - `air`, `prover`, and `verifier` crates only
+- Fixed partition size calculations in `PartitionOptions` (#340).
+
+## 0.10.2 (2024-11-18)
+- Implemented `core::error::Error` for error types (#341).
+
+## 0.10.1 (2024-10-30)
+- Fixed partition hashing and add logging to aux trace building (#338).
+
+## 0.10.0 (2024-10-25)
+- [BREAKING] Refactored maybe-async macro into simpler maybe-async and maybe-await macros (#283).
+- [BREAKING] Introduced `VectorCommitment` abstraction (#285).
+- Added `maybe-async-trait` procedural macro (#334).
+- [BREAKING] Added options for partitioned trace commitments (#336).
+- Updated minimum supported Rust version to 1.82.
+
+## 0.9.3 (2024-09-25) - `utils/core` and `math` crates only
+- Implemented `get_size_hint()` for default impls (#332).
+
+## 0.9.2 (2024-09-06) - `utils/core` crate only
+- Fixed `read_slice` impl for ReadAdapter` (#309).
+
+## 0.9.1 (2024-06-24) - `utils/core` crate only
+- Fixed `usize` serialization in `ByteWriter`.
+
+## 0.9.0 (2024-05-09)
+- [BREAKING] Merged `TraceLayout` into `TraceInfo` (#245).
+- Implemented Lagrange Kernel constraints (#247, )
+- [BREAKING] refactored `TraceOodFrame` struct (#266, #274).
+- [BREAKING] explicitly limited the number of auxiliary trace segments to 1 (#267).
+- Implemented additional field conversions for the `f64` field (#268).
+- [BREAKING] Added support for auxiliary proofs (#271).
+- Introduced async prover (enabled via `async` feature) (#280).
+- [BREAKING] removed `group_vector_elements()` utility function (#282).
+- [BREAKING] removed `FieldElement::zeroed_vector()` function (#282).
+- [BREAKING] removed previously deprecated re-exports of core modules.
+- Updated minimum supported Rust version to 1.78.
+
+## 0.8.4 (2024-03-28) - `math` crate only
+* Added more to/from conversions for `f64` field (#268).
+
+## 0.8.4 (2024-03-18) - `utils/core` crate only
+* Re-added unintentionally removed re-exported liballoc macros (#263).
+
+## 0.8.3 (2024-03-15)
+* Implemented `Serializable` and `Deserializable` on `String` (#258).
+* Extended range of possible implementations of `ByteReader` and `ByteWriter`. (#262).
+
+## 0.8.2 (2024-02-27) - `utils/core` crate only
+* Extended `write_many` to support `IntoIterator` (#251)
+
+## 0.8.1 (2024-02-21)
+* Refactored utils module re-exports to comply with latest clippy updates (#250).
+
+## 0.8.0 (2024-02-06)
+* Added variable-length serialization and deserialization for `usize` type (#238).
+* [BREAKING] Removed `Serializable` and `Deserializable` implementations from slices and vectors (#239).
+* Moved from `log` to `tracing` for logging and added `tracing-forest` feature (#241).
+* Updated provable security estimation to explicitly use the number of openings (#242).
+* [BREAKING] Removed `From<u64>` and `From<u128>` implementations from field elements (#243).
+* Increased min version of `rustc` to 1.75.
+
+## 0.7.4 (2023-12-18) - `air` crate only
+* Fixed a bug in `StarkProof` deserialization (#236).
+
+## 0.7.4 (2023-12-07) - `utils/core` crate only
+* Added `Clone` derive to `DeserializationError`.
+
+## 0.7.3 (2023-12-06) - `utils/core` crate only
+* Added default deserializer implementations (#233)
+
+## 0.7.3 (2023-12-01) - `air` crate only
+* Fixed `StarkProof::new_dummy()` constructor (#234).
+
+## 0.7.2 (2023-11-30) - `air`, `fri`, and `utils/core` crates only
+* Minor proof serialization and deserialization refactoring (#231).
+* Added `StarkProof::new_dummy()` constructor to simplify testing (#232).
+
+## 0.7.1 (2023-11-17) - `math` crate only
+* Changed `Debug` format for field elements (#228).
+
+## 0.7.1 (2023-10-28) - `air` crate only
+* Changed most methods for `ProofOption` to be `const fn`.
+
+## 0.7.0 (2023-10-23)
+* [BREAKING] replaced the `TraceLde` struct with a trait (#207).
+* [BREAKING] refactored `RandomCoin` trait (#214).
+* Improved proven security estimation (#215).
+* [BREAKING] replaced the `ConstraintEvaluator` struct with a trait (#217).
+* Added support for proven security estimation in `no_std` context (#218).
+* [BREAKING] refactored `verify()` function to take `AcceptableOptions` as a parameter (#219).
+* Increased min version of `rustc` to 1.73 (#221).
+* Allowed duplicate query positions (#224).
+
+## 0.6.5 (2023-08-09) - math crate only
+* Added conditional support for serde on field elements (#209)
+
+## 0.6.4 (2023-05-26)
+* Simplified construction of constraint composition polynomial (#198).
+* Refactored serialization of OOD frame in STARK proofs (#199).
+* Re-exported `btree_map` and `btree_set` modules from core collections (#202).
+* Simplified construction of DEEP composition polynomial (#203).
+
+## 0.6.3 (2023-05-03)
+* Sped up proof verification using batch inverse (#190).
+* Updated `ConstraintCommitment` to use `RowMatrix` internally (#191).
+* Sped up FRI prover via more efficient `get_inv_offsets` implementation (#193).
+* Exposed `build_segments()` method publicly (#194).
+
+## 0.6.2 (2023-04-15)
+* Updated `MerkleTree` and matrix structs to make them more suitable for HW acceleration (#185).
+* Replaced `log2()` usage with native `.ilog2()` (#186).
+
 ## 0.6.1 (2023-03-29)
 * Disabled proven security estimation in `no-std` context.
 

@@ -3,32 +3,37 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
+//! This module contains helper functions as well as constants used to perform a 12x12 vector-matrix
+//! multiplication. The special form of our MDS matrix i.e. being circulant, allows us to reduce
+//! the vector-matrix multiplication to a Hadamard product of two vectors in "frequency domain".
+//! This follows from the simple fact that every circulant matrix has the columns of the discrete
+//! Fourier transform matrix as orthogonal eigenvectors.
+//! The implementation also avoids the use of 3-point FFTs, and 3-point iFFTs, and substitutes that
+//! with explicit expressions. It also avoids, due to the form of our matrix in the frequency
+//! domain, divisions by 2 and repeated modular reductions. This is because of our explicit choice
+//! of an MDS matrix that has small powers of 2 entries in frequency domain.
+//! The following implementation has benefited greatly from the discussions and insights of
+//! Hamish Ivey-Law and Jacqueline Nabaglo of Polygon Zero and is based on Nabaglo's implementation
+//! in [Plonky2](https://github.com/mir-protocol/plonky2).
+//! The circulant matrix is identified by its first row: [7, 23, 8, 26, 13, 10, 9, 7, 6, 22, 21, 8].
+
 // FFT-BASED MDS MULTIPLICATION HELPER FUNCTIONS
 // ================================================================================================
 
-use math::fft::real_u64::{fft4_real, ifft4_real_unreduced};
-use math::{fields::f64::BaseElement, FieldElement};
-
-/// This module contains helper functions as well as constants used to perform a 12x12 vector-matrix
-/// multiplication. The special form of our MDS matrix i.e. being circulant, allows us to reduce
-/// the vector-matrix multiplication to a Hadamard product of two vectors in "frequency domain".
-/// This follows from the simple fact that every circulant matrix has the columns of the discrete
-/// Fourier transform matrix as orthogonal eigenvectors.
-/// The implementation also avoids the use of 3-point FFTs, and 3-point iFFTs, and substitutes that
-/// with explicit expressions. It also avoids, due to the form of our matrix in the frequency domain,
-/// divisions by 2 and repeated modular reductions. This is because of our explicit choice of
-/// an MDS matrix that has small powers of 2 entries in frequency domain.
-/// The following implementation has benefited greatly from the discussions and insights of
-/// Hamish Ivey-Law and Jacqueline Nabaglo of Polygon Zero.
-/// The circulant matrix is identified by its first row: [7, 23, 8, 26, 13, 10, 9, 7, 6, 22, 21, 8].
+use math::{
+    fft::real_u64::{fft4_real, ifft4_real_unreduced},
+    fields::f64::BaseElement,
+    FieldElement,
+};
 
 // MDS matrix in frequency domain.
 // More precisely, this is the output of the three 4-point (real) FFTs of the first column of
 // the MDS matrix i.e. just before the multiplication with the appropriate twiddle factors
 // and application of the final four 3-point FFT in order to get the full 12-point FFT.
 // The entries have been scaled appropriately in order to avoid divisions by 2 in iFFT2 and iFFT4.
-// The code to generate the matrix in frequency domain is based on an adaptation of a code, to generate
-// MDS matrices efficiently in original domain, that was developed by the Polygon Zero team.
+// The code to generate the matrix in frequency domain is based on an adaptation of a code, to
+// generate MDS matrices efficiently in original domain, that was developed by the Polygon Zero
+// team.
 const MDS_FREQ_BLOCK_ONE: [i64; 3] = [16, 8, 16];
 const MDS_FREQ_BLOCK_TWO: [(i64, i64); 3] = [(-1, 2), (-1, 1), (4, 8)];
 const MDS_FREQ_BLOCK_THREE: [i64; 3] = [-8, 1, 1];
@@ -72,7 +77,7 @@ pub(crate) fn mds_multiply_freq(state: [u64; 12]) -> [u64; 12] {
     let (u8, u9, u10) = fft4_real([s2, s5, s8, s11]);
 
     // This where the multiplication in frequency domain is done. More precisely, and with
-    // the appropriate permuations in between, the sequence of
+    // the appropriate permutations in between, the sequence of
     // 3-point FFTs --> multiplication by twiddle factors --> Hadamard multiplication -->
     // 3 point iFFTs --> multiplication by (inverse) twiddle factors
     // is "squashed" into one step composed of the functions "block1", "block2" and "block3".

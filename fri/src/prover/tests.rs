@@ -3,14 +3,17 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
+use alloc::vec::Vec;
+
+use crypto::{hashers::Blake3_256, DefaultRandomCoin, Hasher, MerkleTree, RandomCoin};
+use math::{fft, fields::f128::BaseElement, FieldElement};
+use utils::{Deserializable, Serializable, SliceReader};
+
 use super::{DefaultProverChannel, FriProver};
 use crate::{
     verifier::{DefaultVerifierChannel, FriVerifier},
     FriOptions, FriProof, VerifierError,
 };
-use crypto::{hashers::Blake3_256, DefaultRandomCoin, Hasher, RandomCoin};
-use math::{fft, fields::f128::BaseElement, FieldElement};
-use utils::{collections::Vec, Deserializable, Serializable, SliceReader};
 
 type Blake3 = Blake3_256<BaseElement>;
 
@@ -23,12 +26,7 @@ fn fri_folding_2() {
     let lde_blowup_e = 3;
     let folding_factor_e = 1;
     let max_remainder_degree = 7;
-    fri_prove_verify(
-        trace_length_e,
-        lde_blowup_e,
-        folding_factor_e,
-        max_remainder_degree,
-    )
+    fri_prove_verify(trace_length_e, lde_blowup_e, folding_factor_e, max_remainder_degree)
 }
 
 #[test]
@@ -37,12 +35,7 @@ fn fri_folding_4() {
     let lde_blowup_e = 3;
     let folding_factor_e = 2;
     let max_remainder_degree = 255;
-    fri_prove_verify(
-        trace_length_e,
-        lde_blowup_e,
-        folding_factor_e,
-        max_remainder_degree,
-    )
+    fri_prove_verify(trace_length_e, lde_blowup_e, folding_factor_e, max_remainder_degree)
 }
 
 // TEST UTILS
@@ -56,9 +49,7 @@ pub fn build_prover_channel(
 }
 
 pub fn build_evaluations(trace_length: usize, lde_blowup: usize) -> Vec<BaseElement> {
-    let mut p = (0..trace_length as u128)
-        .map(BaseElement::new)
-        .collect::<Vec<_>>();
+    let mut p = (0..trace_length as u128).map(BaseElement::new).collect::<Vec<_>>();
     let domain_size = trace_length * lde_blowup;
     p.resize(domain_size, BaseElement::ZERO);
 
@@ -85,19 +76,16 @@ pub fn verify_proof(
     let proof = FriProof::read_from(&mut reader).unwrap();
 
     // verify the proof
-    let mut channel = DefaultVerifierChannel::<BaseElement, Blake3>::new(
+    let mut channel = DefaultVerifierChannel::<BaseElement, Blake3, MerkleTree<Blake3>>::new(
         proof,
         commitments,
         domain_size,
         options.folding_factor(),
     )
     .unwrap();
-    let mut coin = DefaultRandomCoin::<Blake3>::new(&[]);
+    let mut coin = crypto::DefaultRandomCoin::<Blake3>::new(&[]);
     let verifier = FriVerifier::new(&mut channel, &mut coin, options.clone(), max_degree)?;
-    let queried_evaluations = positions
-        .iter()
-        .map(|&p| evaluations[p])
-        .collect::<Vec<_>>();
+    let queried_evaluations = positions.iter().map(|&p| evaluations[p]).collect::<Vec<_>>();
     verifier.verify(&mut channel, &queried_evaluations, positions)
 }
 
@@ -116,9 +104,9 @@ fn fri_prove_verify(
     let evaluations = build_evaluations(trace_length, lde_blowup);
 
     // instantiate the prover and generate the proof
-    let mut prover = FriProver::new(options.clone());
+    let mut prover = FriProver::<_, _, _, MerkleTree<Blake3>>::new(options.clone());
     prover.build_layers(&mut channel, evaluations.clone());
-    let positions = channel.draw_query_positions();
+    let positions = channel.draw_query_positions(0);
     let proof = prover.build_proof(&positions);
 
     // make sure the proof can be verified

@@ -3,11 +3,15 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
+use std::time::Duration;
+
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use math::{fft, fields::f64::BaseElement, StarkField};
 use rand_utils::rand_vector;
-use std::time::Duration;
-use winter_prover::{ColMatrix, RowMatrix, StarkDomain};
+use winter_prover::{
+    matrix::{ColMatrix, RowMatrix},
+    StarkDomain,
+};
 
 // CONSTANTS
 // ================================================================================================
@@ -25,10 +29,7 @@ fn evaluate_columns(c: &mut Criterion) {
         let columns: Vec<Vec<BaseElement>> = (0..num_poly).map(|_| rand_vector(SIZE)).collect();
         let column_matrix = ColMatrix::new(columns);
         for &blowup_factor in BLOWUP_FACTOR.iter() {
-            let params = BenchmarkParams {
-                num_poly,
-                blowup_factor,
-            };
+            let params = BenchmarkParams { num_poly, blowup_factor };
             group.bench_function(BenchmarkId::new(SIZE.to_string(), params), |bench| {
                 bench.iter_with_large_drop(|| {
                     let twiddles = fft::get_twiddles::<BaseElement>(SIZE);
@@ -51,10 +52,7 @@ fn evaluate_matrix(c: &mut Criterion) {
         let columns: Vec<Vec<BaseElement>> = (0..num_poly).map(|_| rand_vector(SIZE)).collect();
         let column_matrix = ColMatrix::new(columns);
         for &blowup_factor in BLOWUP_FACTOR.iter() {
-            let params = BenchmarkParams {
-                num_poly,
-                blowup_factor,
-            };
+            let params = BenchmarkParams { num_poly, blowup_factor };
             group.bench_function(BenchmarkId::new(SIZE.to_string(), params), |bench| {
                 bench.iter_with_large_drop(|| {
                     RowMatrix::evaluate_polys::<8>(&column_matrix, blowup_factor);
@@ -73,11 +71,7 @@ struct BenchmarkParams {
 
 impl std::fmt::Display for BenchmarkParams {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "num_poly: {}, blowup_factor: {}",
-            self.num_poly, self.blowup_factor
-        )
+        write!(f, "num_poly: {}, blowup_factor: {}", self.num_poly, self.blowup_factor)
     }
 }
 

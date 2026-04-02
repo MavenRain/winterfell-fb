@@ -3,10 +3,12 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
-use super::{ByteDigest, ElementHasher, Hasher};
-use core::{convert::TryInto, fmt::Debug, marker::PhantomData};
+use core::{fmt::Debug, marker::PhantomData};
+
 use math::{FieldElement, StarkField};
 use utils::ByteWriter;
+
+use super::{ByteDigest, ElementHasher, Hasher};
 
 #[cfg(test)]
 mod tests;
@@ -32,6 +34,10 @@ impl<B: StarkField> Hasher for Blake3_256<B> {
         ByteDigest(blake3::hash(ByteDigest::digests_as_bytes(values)).into())
     }
 
+    fn merge_many(values: &[Self::Digest]) -> Self::Digest {
+        ByteDigest(blake3::hash(ByteDigest::digests_as_bytes(values)).into())
+    }
+
     fn merge_with_int(seed: Self::Digest, value: u64) -> Self::Digest {
         let mut data = [0; 40];
         data[..32].copy_from_slice(&seed.0);
@@ -53,7 +59,7 @@ impl<B: StarkField> ElementHasher for Blake3_256<B> {
             // when elements' internal and canonical representations differ, we need to serialize
             // them before hashing
             let mut hasher = BlakeHasher::new();
-            hasher.write(elements);
+            hasher.write_many(elements);
             ByteDigest(hasher.finalize())
         }
     }
@@ -82,6 +88,11 @@ impl<B: StarkField> Hasher for Blake3_192<B> {
         ByteDigest(result.as_bytes()[..24].try_into().unwrap())
     }
 
+    fn merge_many(values: &[Self::Digest]) -> Self::Digest {
+        let result = blake3::hash(ByteDigest::digests_as_bytes(values));
+        ByteDigest(result.as_bytes()[..24].try_into().unwrap())
+    }
+
     fn merge_with_int(seed: Self::Digest, value: u64) -> Self::Digest {
         let mut data = [0; 32];
         data[..24].copy_from_slice(&seed.0);
@@ -106,7 +117,7 @@ impl<B: StarkField> ElementHasher for Blake3_192<B> {
             // when elements' internal and canonical representations differ, we need to serialize
             // them before hashing
             let mut hasher = BlakeHasher::new();
-            hasher.write(elements);
+            hasher.write_many(elements);
             let result = hasher.finalize();
             ByteDigest(result[..24].try_into().unwrap())
         }

@@ -25,21 +25,22 @@ pub enum AssertionError {
 }
 
 impl fmt::Display for AssertionError {
-    #[rustfmt::skip]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::TraceWidthTooShort(expected, actual) => {
                 write!(f, "expected trace width to be at least {expected}, but was {actual}")
-            }
+            },
             Self::TraceLengthNotPowerOfTwo(actual) => {
                 write!(f, "expected trace length to be a power of two, but was {actual}")
-            }
+            },
             Self::TraceLengthTooShort(expected, actual) => {
                 write!(f, "expected trace length to be at least {expected}, but was {actual}")
-            }
+            },
             Self::TraceLengthNotExact(expected, actual) => {
                 write!(f, "expected trace length to be exactly {expected}, but was {actual}")
-            }
+            },
         }
     }
 }
+
+impl core::error::Error for AssertionError {}

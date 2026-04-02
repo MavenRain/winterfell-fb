@@ -10,10 +10,10 @@
 //! # Usage
 //! To verify a proof that a computation was executed correctly, you'll need to do the following:
 //!
-//! 1. Define an *algebraic intermediate representation* (AIR) for you computation. This can be
-//!    done by implementing [Air] trait.
-//! 2. Execute [verify()] function and supply the AIR of your computation together with the
-//!    [StarkProof] and related public inputs as parameters.
+//! 1. Define an *algebraic intermediate representation* (AIR) for you computation. This can be done
+//!    by implementing [Air] trait.
+//! 2. Execute [verify()] function and supply the AIR of your computation together with the [Proof]
+//!    and related public inputs as parameters.
 //!
 //! # Performance
 //! Proof verification is extremely fast and is nearly independent of the complexity of the
@@ -26,33 +26,31 @@
 //! need to be in tens of thousands. And even for hundreds of thousands of asserted values, the
 //! verification time should not exceed 50 ms.
 
-#![cfg_attr(not(feature = "std"), no_std)]
+#![no_std]
 
-#[cfg(not(feature = "std"))]
 #[macro_use]
 extern crate alloc;
 
-pub use air::{
-    proof::StarkProof, Air, AirContext, Assertion, AuxTraceRandElements, BoundaryConstraint,
-    BoundaryConstraintGroup, ConstraintCompositionCoefficients, ConstraintDivisor,
-    DeepCompositionCoefficients, EvaluationFrame, FieldExtension, ProofOptions, TraceInfo,
-    TransitionConstraintDegree, TransitionConstraintGroup,
-};
+use alloc::vec::Vec;
+use core::cmp;
 
+use air::proof::merge_ood_evaluations;
+pub use air::{
+    proof::Proof, Air, AirContext, Assertion, BoundaryConstraint, BoundaryConstraintGroup,
+    ConstraintCompositionCoefficients, ConstraintDivisor, DeepCompositionCoefficients,
+    EvaluationFrame, FieldExtension, ProofOptions, TraceInfo, TransitionConstraintDegree,
+};
+pub use crypto;
+use crypto::{ElementHasher, Hasher, RandomCoin, VectorCommitment};
+use fri::FriVerifier;
 pub use math;
 use math::{
     fields::{CubeExtension, QuadExtension},
     FieldElement, ToElements,
 };
-
 pub use utils::{
     ByteReader, ByteWriter, Deserializable, DeserializationError, Serializable, SliceReader,
 };
-
-pub use crypto;
-use crypto::{ElementHasher, RandomCoin};
-
-use fri::FriVerifier;
 
 mod channel;
 use channel::VerifierChannel;
@@ -68,35 +66,42 @@ pub use errors::VerifierError;
 
 // VERIFIER
 // ================================================================================================
+
 /// Verifies that the specified computation was executed correctly against the specified inputs.
 ///
-/// Specifically, for a computation specified by `AIR` and `HashFn` type parameter, verifies that the provided
-/// `proof` attests to the correct execution of the computation against public inputs specified
-/// by `pub_inputs`. If the verification is successful, `Ok(())` is returned.
+/// Specifically, for a computation specified by `AIR` and `HashFn` type parameter, verifies that
+/// the provided `proof` attests to the correct execution of the computation against public inputs
+/// specified by `pub_inputs`. If the verification is successful, `Ok(())` is returned.
 ///
 /// # Errors
 /// Returns an error if combination of the provided proof and public inputs does not attest to
 /// a correct execution of the computation. This could happen for many various reasons, including:
 /// - The specified proof was generated for a different computation.
 /// - The specified proof was generated for this computation but for different public inputs.
-#[rustfmt::skip]
-pub fn verify<AIR, HashFn, RandCoin>(
-    proof: StarkProof,
+/// - The specified proof was generated with parameters not providing an acceptable security level.
+pub fn verify<AIR, HashFn, RandCoin, VC>(
+    proof: Proof,
     pub_inputs: AIR::PublicInputs,
-) -> Result<(), VerifierError> 
-where 
-    AIR: Air, 
+    acceptable_options: &AcceptableOptions,
+) -> Result<(), VerifierError>
+where
+    AIR: Air,
     HashFn: ElementHasher<BaseField = AIR::BaseField>,
     RandCoin: RandomCoin<BaseField = AIR::BaseField, Hasher = HashFn>,
+    VC: VectorCommitment<HashFn>,
 {
+    // check that `proof` was generated with an acceptable set of parameters from the point of view
+    // of the verifier
+    acceptable_options.validate::<HashFn>(&proof)?;
+
     // build a seed for the public coin; the initial seed is a hash of the proof context and the
     // public inputs, but as the protocol progresses, the coin will be reseeded with the info
     // received from the prover
     let mut public_coin_seed = proof.context.to_elements();
     public_coin_seed.append(&mut pub_inputs.to_elements());
-    
+
     // create AIR instance for the computation specified in the proof
-    let air = AIR::new(proof.get_trace_info(), pub_inputs, proof.options().clone());
+    let air = AIR::new(proof.trace_info().clone(), pub_inputs, proof.options().clone());
 
     // figure out which version of the generic proof verification procedure to run. this is a sort
     // of static dispatch for selecting two generic parameter: extension field and hash function.
@@ -104,7 +109,11 @@ where
         FieldExtension::None => {
             let public_coin = RandCoin::new(&public_coin_seed);
             let channel = VerifierChannel::new(&air, proof)?;
-            perform_verification::<AIR, AIR::BaseField, HashFn, RandCoin>(air, channel, public_coin)
+            perform_verification::<AIR, AIR::BaseField, HashFn, RandCoin, VC>(
+                air,
+                channel,
+                public_coin,
+            )
         },
         FieldExtension::Quadratic => {
             if !<QuadExtension<AIR::BaseField>>::is_supported() {
@@ -112,7 +121,11 @@ where
             }
             let public_coin = RandCoin::new(&public_coin_seed);
             let channel = VerifierChannel::new(&air, proof)?;
-            perform_verification::<AIR, QuadExtension<AIR::BaseField>, HashFn, RandCoin>(air, channel, public_coin)
+            perform_verification::<AIR, QuadExtension<AIR::BaseField>, HashFn, RandCoin, VC>(
+                air,
+                channel,
+                public_coin,
+            )
         },
         FieldExtension::Cubic => {
             if !<CubeExtension<AIR::BaseField>>::is_supported() {
@@ -120,7 +133,11 @@ where
             }
             let public_coin = RandCoin::new(&public_coin_seed);
             let channel = VerifierChannel::new(&air, proof)?;
-            perform_verification::<AIR, CubeExtension<AIR::BaseField>, HashFn, RandCoin>(air, channel, public_coin)
+            perform_verification::<AIR, CubeExtension<AIR::BaseField>, HashFn, RandCoin, VC>(
+                air,
+                channel,
+                public_coin,
+            )
         },
     }
 }
@@ -129,16 +146,17 @@ where
 // ================================================================================================
 /// Performs the actual verification by reading the data from the `channel` and making sure it
 /// attests to a correct execution of the computation specified by the provided `air`.
-fn perform_verification<A, E, H, R>(
+fn perform_verification<A, E, H, R, V>(
     air: A,
-    mut channel: VerifierChannel<E, H>,
+    mut channel: VerifierChannel<E, H, V>,
     mut public_coin: R,
 ) -> Result<(), VerifierError>
 where
-    A: Air,
     E: FieldElement<BaseField = A::BaseField>,
+    A: Air,
     H: ElementHasher<BaseField = A::BaseField>,
     R: RandomCoin<BaseField = A::BaseField, Hasher = H>,
+    V: VectorCommitment<H>,
 {
     // 1 ----- trace commitment -------------------------------------------------------------------
     // Read the commitments to evaluations of the trace polynomials over the LDE domain sent by the
@@ -149,20 +167,25 @@ where
     // used to draw random elements needed to construct the next trace segment. The last trace
     // commitment is used to draw a set of random coefficients which the prover uses to compute
     // constraint composition polynomial.
+    const MAIN_TRACE_IDX: usize = 0;
+    const AUX_TRACE_IDX: usize = 1;
     let trace_commitments = channel.read_trace_commitments();
 
     // reseed the coin with the commitment to the main trace segment
-    public_coin.reseed(trace_commitments[0]);
+    public_coin.reseed(trace_commitments[MAIN_TRACE_IDX]);
 
     // process auxiliary trace segments (if any), to build a set of random elements for each segment
-    let mut aux_trace_rand_elements = AuxTraceRandElements::<E>::new();
-    for (i, commitment) in trace_commitments.iter().skip(1).enumerate() {
-        let rand_elements = air
-            .get_aux_trace_segment_random_elements(i, &mut public_coin)
-            .map_err(|_| VerifierError::RandomCoinError)?;
-        aux_trace_rand_elements.add_segment_elements(rand_elements);
-        public_coin.reseed(*commitment);
-    }
+    let aux_trace_rand_elements = if air.trace_info().is_multi_segment() {
+        let aux_rand_elements = air
+            .get_aux_rand_elements(&mut public_coin)
+            .expect("failed to generate the random elements needed to build the auxiliary trace");
+
+        public_coin.reseed(trace_commitments[AUX_TRACE_IDX]);
+
+        Some(aux_rand_elements)
+    } else {
+        None
+    };
 
     // build random coefficients for the composition polynomial
     let constraint_coeffs = air
@@ -177,61 +200,51 @@ where
     // and sends the results back to the verifier.
     let constraint_commitment = channel.read_constraint_commitment();
     public_coin.reseed(constraint_commitment);
-    let z = public_coin
-        .draw::<E>()
-        .map_err(|_| VerifierError::RandomCoinError)?;
+    let z = public_coin.draw::<E>().map_err(|_| VerifierError::RandomCoinError)?;
 
     // 3 ----- OOD consistency check --------------------------------------------------------------
     // make sure that evaluations obtained by evaluating constraints over the out-of-domain frame
     // are consistent with the evaluations of composition polynomial columns sent by the prover
 
     // read the out-of-domain trace frames (the main trace frame and auxiliary trace frame, if
-    // provided) sent by the prover and evaluate constraints over them; also, reseed the public
-    // coin with the OOD frames received from the prover.
-    let (ood_main_trace_frame, ood_aux_trace_frame) = channel.read_ood_trace_frame();
+    // provided) sent by the prover and evaluate constraints over them.
+    let ood_trace_frame = channel.read_ood_trace_frame();
+    let ood_main_trace_frame = ood_trace_frame.main_frame();
+    let ood_aux_trace_frame = ood_trace_frame.aux_frame();
     let ood_constraint_evaluation_1 = evaluate_constraints(
         &air,
         constraint_coeffs,
         &ood_main_trace_frame,
         &ood_aux_trace_frame,
-        aux_trace_rand_elements,
+        aux_trace_rand_elements.as_ref(),
         z,
     );
 
-    if let Some(ref aux_trace_frame) = ood_aux_trace_frame {
-        // when the trace contains auxiliary segments, append auxiliary trace elements at the
-        // end of main trace elements for both current and next rows in the frame. this is
-        // needed to be consistent with how the prover writes OOD frame into the channel.
-
-        let mut current = ood_main_trace_frame.current().to_vec();
-        current.extend_from_slice(aux_trace_frame.current());
-        public_coin.reseed(H::hash_elements(&current));
-
-        let mut next = ood_main_trace_frame.next().to_vec();
-        next.extend_from_slice(aux_trace_frame.next());
-        public_coin.reseed(H::hash_elements(&next));
-    } else {
-        public_coin.reseed(H::hash_elements(ood_main_trace_frame.current()));
-        public_coin.reseed(H::hash_elements(ood_main_trace_frame.next()));
-    }
-
-    // read evaluations of composition polynomial columns sent by the prover, and reduce them into
-    // a single value by computing sum(z^i * value_i), where value_i is the evaluation of the ith
-    // column polynomial at z^m, where m is the total number of column polynomials; also, reseed
-    // the public coin with the OOD constraint evaluations received from the prover.
-    let ood_constraint_evaluations = channel.read_ood_constraint_evaluations();
+    // read evaluations of composition polynomial columns sent by the prover, and reduce
+    // the evaluations at z into a single value by computing
+    // \sum_{i=0}^{m-1}(z^(i * l) * value_i), where value_i is the
+    // evaluation of the ith column polynomial H_i(X) at z, l is the trace length and m is
+    // the number of composition column polynomials. This computes H(z) (i.e.
+    // the evaluation of the composition polynomial at z) using the fact that
+    // H(X) = \sum_{i=0}^{m-1} X^{i * l} H_i(X).
+    let ood_constraint_evaluations = channel.read_ood_constraint_frame();
     let ood_constraint_evaluation_2 = ood_constraint_evaluations
+        .current_row()
         .iter()
         .enumerate()
         .fold(E::ZERO, |result, (i, &value)| {
-            result + z.exp_vartime((i as u32).into()) * value
+            result + z.exp_vartime(((i * (air.trace_length())) as u32).into()) * value
         });
-    public_coin.reseed(H::hash_elements(&ood_constraint_evaluations));
 
     // finally, make sure the values are the same
     if ood_constraint_evaluation_1 != ood_constraint_evaluation_2 {
         return Err(VerifierError::InconsistentOodConstraintEvaluations);
     }
+
+    // reseed the public coin with OOD evaluations
+    let ood_evals = merge_ood_evaluations(&ood_trace_frame, &ood_constraint_evaluations);
+    let digest = H::hash_elements(&ood_evals);
+    public_coin.reseed(digest);
 
     // 4 ----- FRI commitments --------------------------------------------------------------------
     // draw coefficients for computing DEEP composition polynomial from the public coin; in the
@@ -257,12 +270,11 @@ where
     // TODO: make sure air.lde_domain_size() == fri_verifier.domain_size()
 
     // 5 ----- trace and constraint queries -------------------------------------------------------
-    // read proof-of-work nonce sent by the prover and update the public coin with it
+    // read proof-of-work nonce sent by the prover
     let pow_nonce = channel.read_pow_nonce();
-    public_coin.reseed_with_int(pow_nonce);
 
     // make sure the proof-of-work specified by the grinding factor is satisfied
-    if public_coin.leading_zeros() < air.options().grinding_factor() {
+    if public_coin.check_leading_zeros(pow_nonce) < air.options().grinding_factor() {
         return Err(VerifierError::QuerySeedProofOfWorkVerificationFailed);
     }
 
@@ -270,9 +282,14 @@ where
     // interactive version of the protocol, the verifier sends these query positions to the prover,
     // and the prover responds with decommitments against these positions for trace and constraint
     // composition polynomial evaluations.
-    let query_positions = public_coin
-        .draw_integers(air.options().num_queries(), air.lde_domain_size())
+    let mut query_positions = public_coin
+        .draw_integers(air.options().num_queries(), air.lde_domain_size(), pow_nonce)
         .map_err(|_| VerifierError::RandomCoinError)?;
+
+    // remove any potential duplicates from the positions as the prover will send openings only
+    // for unique queries
+    query_positions.sort_unstable();
+    query_positions.dedup();
 
     // read evaluations of trace and constraint composition polynomials at the queried positions;
     // this also checks that the read values are valid against trace and constraint commitments
@@ -283,15 +300,14 @@ where
     // 6 ----- DEEP composition -------------------------------------------------------------------
     // compute evaluations of the DEEP composition polynomial at the queried positions
     let composer = DeepComposer::new(&air, &query_positions, z, deep_coefficients);
-    let t_composition = composer.compose_trace_columns(
+    let deep_evaluations = composer.compose_columns(
         queried_main_trace_states,
         queried_aux_trace_states,
+        queried_constraint_evaluations,
         ood_main_trace_frame,
         ood_aux_trace_frame,
+        ood_constraint_evaluations,
     );
-    let c_composition = composer
-        .compose_constraint_evaluations(queried_constraint_evaluations, ood_constraint_evaluations);
-    let deep_evaluations = composer.combine_compositions(t_composition, c_composition);
 
     // 7 ----- Verify low-degree proof -------------------------------------------------------------
     // make sure that evaluations of the DEEP composition polynomial we computed in the previous
@@ -299,4 +315,49 @@ where
     fri_verifier
         .verify(&mut channel, &deep_evaluations, &query_positions)
         .map_err(VerifierError::FriVerificationFailed)
+}
+
+// ACCEPTABLE OPTIONS
+// ================================================================================================
+// Specifies either the minimal, conjectured or proven, security level or a set of
+// `ProofOptions` that are acceptable by the verification procedure.
+pub enum AcceptableOptions {
+    /// Minimal acceptable conjectured security level
+    MinConjecturedSecurity(u32),
+    /// Minimal acceptable proven security level
+    MinProvenSecurity(u32),
+    /// Set of acceptable proof parameters
+    OptionSet(Vec<ProofOptions>),
+}
+
+impl AcceptableOptions {
+    /// Checks that a proof was generated using an acceptable set of parameters.
+    pub fn validate<H: Hasher>(&self, proof: &Proof) -> Result<(), VerifierError> {
+        match self {
+            AcceptableOptions::MinConjecturedSecurity(minimal_security) => {
+                let conjectured_security = proof.conjectured_security::<H>();
+                if !conjectured_security.is_at_least(*minimal_security) {
+                    return Err(VerifierError::InsufficientConjecturedSecurity(
+                        *minimal_security,
+                        conjectured_security.bits(),
+                    ));
+                }
+            },
+            AcceptableOptions::MinProvenSecurity(minimal_security) => {
+                let proven_security = proof.proven_security::<H>();
+                if !proven_security.is_at_least(*minimal_security) {
+                    return Err(VerifierError::InsufficientProvenSecurity(
+                        *minimal_security,
+                        cmp::max(proven_security.ldr_bits(), proven_security.udr_bits()),
+                    ));
+                }
+            },
+            AcceptableOptions::OptionSet(options) => {
+                if !options.iter().any(|opt| opt == proof.options()) {
+                    return Err(VerifierError::UnacceptableProofOptions);
+                }
+            },
+        }
+        Ok(())
+    }
 }

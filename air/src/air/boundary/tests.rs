@@ -3,14 +3,16 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
+use alloc::{collections::BTreeMap, vec::Vec};
+
+use crypto::{hashers::Blake3_256, DefaultRandomCoin, RandomCoin};
+use math::{fields::f64::BaseElement, polynom, FieldElement, StarkField};
+use rand_utils::{rand_value, rand_vector, shuffle};
+
 use super::{
     super::tests::{build_prng, build_sequence_poly},
     Assertion, BoundaryConstraint,
 };
-use crypto::{hashers::Blake3_256, DefaultRandomCoin, RandomCoin};
-use math::{fields::f128::BaseElement, log2, polynom, FieldElement, StarkField};
-use rand_utils::{rand_value, rand_vector, shuffle};
-use utils::collections::{BTreeMap, Vec};
 
 // BOUNDARY CONSTRAINT TESTS
 // ================================================================================================
@@ -27,15 +29,12 @@ fn boundary_constraint_from_single_assertion() {
         assertion,
         inv_g,
         &mut twiddle_map,
-        prng.draw_pair().unwrap(),
+        prng.draw().unwrap(),
     );
     assert_eq!(0, constraint.column());
     assert_eq!(vec![value], constraint.poly());
     assert_eq!((0, BaseElement::ONE), constraint.poly_offset());
-    assert_eq!(
-        &test_prng.draw_pair::<BaseElement>().unwrap(),
-        constraint.cc()
-    );
+    assert_eq!(&test_prng.draw::<BaseElement>().unwrap(), constraint.cc());
 
     // single value constraints should evaluate to trace_value - value
     let trace_value = rand_value::<BaseElement>();
@@ -51,15 +50,12 @@ fn boundary_constraint_from_single_assertion() {
         assertion,
         inv_g,
         &mut twiddle_map,
-        prng.draw_pair().unwrap(),
+        prng.draw().unwrap(),
     );
     assert_eq!(1, constraint.column());
     assert_eq!(vec![value], constraint.poly());
     assert_eq!((0, BaseElement::ONE), constraint.poly_offset());
-    assert_eq!(
-        &test_prng.draw_pair::<BaseElement>().unwrap(),
-        constraint.cc()
-    );
+    assert_eq!(&test_prng.draw::<BaseElement>().unwrap(), constraint.cc());
 
     // single value constraints should evaluate to trace_value - value
     let trace_value = rand_value::<BaseElement>();
@@ -84,15 +80,12 @@ fn boundary_constraint_from_periodic_assertion() {
         assertion,
         inv_g,
         &mut twiddle_map,
-        prng.draw_pair().unwrap(),
+        prng.draw().unwrap(),
     );
     assert_eq!(0, constraint.column());
     assert_eq!(vec![value], constraint.poly());
     assert_eq!((0, BaseElement::ONE), constraint.poly_offset());
-    assert_eq!(
-        &test_prng.draw_pair::<BaseElement>().unwrap(),
-        constraint.cc()
-    );
+    assert_eq!(&test_prng.draw::<BaseElement>().unwrap(), constraint.cc());
 
     // periodic value constraints should evaluate to trace_value - value
     let trace_value = rand_value::<BaseElement>();
@@ -108,15 +101,12 @@ fn boundary_constraint_from_periodic_assertion() {
         assertion,
         inv_g,
         &mut twiddle_map,
-        prng.draw_pair().unwrap(),
+        prng.draw().unwrap(),
     );
     assert_eq!(2, constraint.column());
     assert_eq!(vec![value], constraint.poly());
     assert_eq!((0, BaseElement::ONE), constraint.poly_offset());
-    assert_eq!(
-        &test_prng.draw_pair::<BaseElement>().unwrap(),
-        constraint.cc()
-    );
+    assert_eq!(&test_prng.draw::<BaseElement>().unwrap(), constraint.cc());
 
     // periodic value constraints should evaluate to trace_value - value
     let trace_value = rand_value::<BaseElement>();
@@ -142,15 +132,12 @@ fn boundary_constraint_from_sequence_assertion() {
         assertion,
         inv_g,
         &mut twiddle_map,
-        prng.draw_pair().unwrap(),
+        prng.draw().unwrap(),
     );
     assert_eq!(0, constraint.column());
     assert_eq!(constraint_poly, constraint.poly());
     assert_eq!((0, BaseElement::ONE), constraint.poly_offset());
-    assert_eq!(
-        &test_prng.draw_pair::<BaseElement>().unwrap(),
-        constraint.cc()
-    );
+    assert_eq!(&test_prng.draw::<BaseElement>().unwrap(), constraint.cc());
     assert_eq!(1, twiddle_map.len());
 
     // sequence value constraints with no offset should evaluate to
@@ -170,15 +157,12 @@ fn boundary_constraint_from_sequence_assertion() {
         assertion,
         inv_g,
         &mut twiddle_map,
-        prng.draw_pair().unwrap(),
+        prng.draw().unwrap(),
     );
     assert_eq!(0, constraint.column());
     assert_eq!(constraint_poly, constraint.poly());
     assert_eq!((3, inv_g.exp(3)), constraint.poly_offset());
-    assert_eq!(
-        &test_prng.draw_pair::<BaseElement>().unwrap(),
-        constraint.cc()
-    );
+    assert_eq!(&test_prng.draw::<BaseElement>().unwrap(), constraint.cc());
     assert_eq!(2, twiddle_map.len());
 
     // sequence value constraints with offset should evaluate to
@@ -277,7 +261,7 @@ fn build_constraint_params(
     BTreeMap<usize, Vec<BaseElement>>,
     DefaultRandomCoin<Blake3_256<BaseElement>>,
 ) {
-    let inv_g = BaseElement::get_root_of_unity(log2(trace_length)).inv();
+    let inv_g = BaseElement::get_root_of_unity(trace_length.ilog2()).inv();
     let prng = build_prng();
     let twiddle_map = BTreeMap::<usize, Vec<BaseElement>>::new();
     (inv_g, twiddle_map, prng)

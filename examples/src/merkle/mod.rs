@@ -3,22 +3,23 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
-use crate::utils::rescue::{
-    self, CYCLE_LENGTH as HASH_CYCLE_LEN, NUM_ROUNDS as NUM_HASH_ROUNDS,
-    STATE_WIDTH as HASH_STATE_WIDTH,
-};
-use crate::{
-    utils::rescue::{Hash, Rescue128},
-    Blake3_192, Blake3_256, Example, ExampleOptions, HashFunction, Sha3_256,
-};
 use core::marker::PhantomData;
-use log::debug;
-use rand_utils::{rand_value, rand_vector};
 use std::time::Instant;
+
+use rand_utils::{rand_value, rand_vector};
+use tracing::{field, info_span};
 use winterfell::{
     crypto::{DefaultRandomCoin, Digest, ElementHasher, MerkleTree},
-    math::{fields::f128::BaseElement, log2, FieldElement, StarkField},
-    ProofOptions, Prover, StarkProof, Trace, TraceTable, VerifierError,
+    math::{fields::f128::BaseElement, FieldElement, StarkField},
+    Proof, ProofOptions, Prover, Trace, VerifierError,
+};
+
+use crate::{
+    utils::rescue::{
+        self, Hash, Rescue128, CYCLE_LENGTH as HASH_CYCLE_LEN, NUM_ROUNDS as NUM_HASH_ROUNDS,
+        STATE_WIDTH as HASH_STATE_WIDTH,
+    },
+    Blake3_192, Blake3_256, Example, ExampleOptions, HashFunction, Sha3_256,
 };
 
 mod air;
@@ -44,15 +45,13 @@ pub fn get_example(
     let (options, hash_fn) = options.to_proof_options(28, 8);
 
     match hash_fn {
-        HashFunction::Blake3_192 => Ok(Box::new(MerkleExample::<Blake3_192>::new(
-            tree_depth, options,
-        ))),
-        HashFunction::Blake3_256 => Ok(Box::new(MerkleExample::<Blake3_256>::new(
-            tree_depth, options,
-        ))),
-        HashFunction::Sha3_256 => Ok(Box::new(MerkleExample::<Sha3_256>::new(
-            tree_depth, options,
-        ))),
+        HashFunction::Blake3_192 => {
+            Ok(Box::new(MerkleExample::<Blake3_192>::new(tree_depth, options)))
+        },
+        HashFunction::Blake3_256 => {
+            Ok(Box::new(MerkleExample::<Blake3_256>::new(tree_depth, options)))
+        },
+        HashFunction::Sha3_256 => Ok(Box::new(MerkleExample::<Sha3_256>::new(tree_depth, options))),
         _ => Err("The specified hash function cannot be used with this example.".to_string()),
     }
 }
@@ -79,16 +78,15 @@ impl<H: ElementHasher> MerkleExample<H> {
         // build Merkle tree of the specified depth
         let now = Instant::now();
         let tree = build_merkle_tree(tree_depth, value, index);
-        debug!(
-            "Built Merkle tree of depth {} in {} ms",
-            tree_depth,
-            now.elapsed().as_millis(),
-        );
+        println!("Built Merkle tree of depth {} in {} ms", tree_depth, now.elapsed().as_millis(),);
 
         // compute Merkle path form the leaf specified by the index
         let now = Instant::now();
-        let path = tree.prove(index).unwrap();
-        debug!(
+        let (leaf, path) = tree.prove(index).unwrap();
+        let mut result = vec![leaf];
+        result.extend_from_slice(&path);
+
+        println!(
             "Computed Merkle path from leaf {} to root {} in {} ms",
             index,
             hex::encode(tree.root().as_bytes()),
@@ -100,7 +98,7 @@ impl<H: ElementHasher> MerkleExample<H> {
             tree_root: *tree.root(),
             value,
             index,
-            path,
+            path: result,
             _hasher: PhantomData,
         }
     }
@@ -111,46 +109,51 @@ impl<H: ElementHasher> MerkleExample<H> {
 
 impl<H: ElementHasher> Example for MerkleExample<H>
 where
-    H: ElementHasher<BaseField = BaseElement>,
+    H: ElementHasher<BaseField = BaseElement> + Sync,
 {
-    fn prove(&self) -> StarkProof {
+    fn prove(&self) -> Proof {
         // generate the execution trace
-        debug!(
-            "Generating proof for proving membership in a Merkle tree of depth {}\n\
-            ---------------------",
+        println!(
+            "Generating proof for proving membership in a Merkle tree of depth {}",
             self.path.len()
         );
         // create the prover
         let prover = MerkleProver::<H>::new(self.options.clone());
 
-        // generate the execution trace
-        let now = Instant::now();
-        let trace = prover.build_trace(self.value, &self.path, self.index);
-        let trace_length = trace.length();
-        debug!(
-            "Generated execution trace of {} registers and 2^{} steps in {} ms",
-            trace.width(),
-            log2(trace_length),
-            now.elapsed().as_millis()
-        );
+        // generate execution trace
+        let trace =
+            info_span!("generate_execution_trace", num_cols = TRACE_WIDTH, steps = field::Empty)
+                .in_scope(|| {
+                    let trace = prover.build_trace(self.value, &self.path, self.index);
+                    tracing::Span::current().record("steps", trace.length());
+                    trace
+                });
 
         // generate the proof
         prover.prove(trace).unwrap()
     }
 
-    fn verify(&self, proof: StarkProof) -> Result<(), VerifierError> {
-        let pub_inputs = PublicInputs {
-            tree_root: self.tree_root.to_elements(),
-        };
-        winterfell::verify::<MerkleAir, H, DefaultRandomCoin<H>>(proof, pub_inputs)
+    fn verify(&self, proof: Proof) -> Result<(), VerifierError> {
+        let pub_inputs = PublicInputs { tree_root: self.tree_root.to_elements() };
+        let acceptable_options =
+            winterfell::AcceptableOptions::OptionSet(vec![proof.options().clone()]);
+        winterfell::verify::<MerkleAir, H, DefaultRandomCoin<H>, MerkleTree<H>>(
+            proof,
+            pub_inputs,
+            &acceptable_options,
+        )
     }
 
-    fn verify_with_wrong_inputs(&self, proof: StarkProof) -> Result<(), VerifierError> {
+    fn verify_with_wrong_inputs(&self, proof: Proof) -> Result<(), VerifierError> {
         let tree_root = self.tree_root.to_elements();
-        let pub_inputs = PublicInputs {
-            tree_root: [tree_root[1], tree_root[0]],
-        };
-        winterfell::verify::<MerkleAir, H, DefaultRandomCoin<H>>(proof, pub_inputs)
+        let pub_inputs = PublicInputs { tree_root: [tree_root[1], tree_root[0]] };
+        let acceptable_options =
+            winterfell::AcceptableOptions::OptionSet(vec![proof.options().clone()]);
+        winterfell::verify::<MerkleAir, H, DefaultRandomCoin<H>, MerkleTree<H>>(
+            proof,
+            pub_inputs,
+            &acceptable_options,
+        )
     }
 }
 

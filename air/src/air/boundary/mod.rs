@@ -3,9 +3,14 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
-use super::{AirContext, Assertion, ConstraintDivisor};
+use alloc::{
+    collections::{BTreeMap, BTreeSet},
+    vec::Vec,
+};
+
 use math::{ExtensionOf, FieldElement};
-use utils::collections::{BTreeMap, BTreeSet, Vec};
+
+use super::{AirContext, Assertion, ConstraintDivisor};
 
 mod constraint;
 pub use constraint::BoundaryConstraint;
@@ -22,7 +27,7 @@ mod tests;
 /// Boundary constraints for a computation.
 ///
 /// Boundary constraints are arranged into two categories: constraints against columns of the main
-/// trace segment, and constraints against columns of auxiliary trace segments. Within each
+/// trace segment, and constraints against columns of the auxiliary trace segment. Within each
 /// category, the constraints are grouped by their divisor (see [BoundaryConstraintGroup] for
 /// more info on boundary constraint structure).
 ///
@@ -47,8 +52,8 @@ impl<E: FieldElement> BoundaryConstraints<E> {
     ///
     /// # Panics
     /// Panics if:
-    /// * The number of provided assertions does not match the number of assertions described by
-    ///   the context.
+    /// * The number of provided assertions does not match the number of assertions described by the
+    ///   context.
     /// * The number of assertions does not match the number of the provided composition
     ///   coefficients.
     /// * The specified assertions are not valid in the context of the computation (e.g., assertion
@@ -57,7 +62,7 @@ impl<E: FieldElement> BoundaryConstraints<E> {
         context: &AirContext<E::BaseField>,
         main_assertions: Vec<Assertion<E::BaseField>>,
         aux_assertions: Vec<Assertion<E>>,
-        composition_coefficients: &[(E, E)],
+        composition_coefficients: &[E],
     ) -> Self {
         // make sure the provided assertions are consistent with the specified context
         assert_eq!(
@@ -71,7 +76,7 @@ impl<E: FieldElement> BoundaryConstraints<E> {
         assert_eq!(
             aux_assertions.len(),
             context.num_aux_assertions,
-            "expected {} assertions against auxiliary trace segments, but received {}",
+            "expected {} assertions against the auxiliary trace segment, but received {}",
             context.num_aux_assertions,
             aux_assertions.len(),
         );
@@ -83,8 +88,8 @@ impl<E: FieldElement> BoundaryConstraints<E> {
         );
 
         let trace_length = context.trace_info.length();
-        let main_trace_width = context.trace_info.layout().main_trace_width();
-        let aux_trace_width = context.trace_info.layout().aux_trace_width();
+        let main_trace_width = context.trace_info.main_trace_width();
+        let aux_trace_width = context.trace_info.aux_segment_width();
 
         // make sure the assertions are valid in the context of their respective trace segments;
         // also, sort the assertions in the deterministic order so that changing the order of
@@ -113,7 +118,7 @@ impl<E: FieldElement> BoundaryConstraints<E> {
             &mut twiddle_map,
         );
 
-        // build constraints for the assertions against auxiliary trace segments
+        // build constraints for the assertions against the auxiliary trace segment
         let aux_constraints = group_constraints(
             aux_assertions,
             context,
@@ -122,10 +127,7 @@ impl<E: FieldElement> BoundaryConstraints<E> {
             &mut twiddle_map,
         );
 
-        Self {
-            main_constraints,
-            aux_constraints,
-        }
+        Self { main_constraints, aux_constraints }
     }
 
     // PUBLIC ACCESSORS
@@ -152,7 +154,7 @@ impl<E: FieldElement> BoundaryConstraints<E> {
 fn group_constraints<F, E>(
     assertions: Vec<Assertion<F>>,
     context: &AirContext<F::BaseField>,
-    composition_coefficients: &[(E, E)],
+    composition_coefficients: &[E],
     inv_g: F::BaseField,
     twiddle_map: &mut BTreeMap<usize, Vec<F::BaseField>>,
 ) -> Vec<BoundaryConstraintGroup<F, E>>
@@ -166,22 +168,18 @@ where
     for (assertion, &cc) in assertions.into_iter().zip(composition_coefficients) {
         let key = (assertion.stride(), assertion.first_step());
         let group = groups.entry(key).or_insert_with(|| {
-            BoundaryConstraintGroup::new(
-                ConstraintDivisor::from_assertion(&assertion, context.trace_len()),
-                context.trace_poly_degree(),
-                context.composition_degree(),
-            )
+            BoundaryConstraintGroup::new(ConstraintDivisor::from_assertion(
+                &assertion,
+                context.trace_len(),
+            ))
         });
 
         // add a new assertion constraint to the current group (last group in the list)
         group.add(assertion, inv_g, twiddle_map, cc);
     }
 
-    // make sure groups are sorted by adjustment degree
-    let mut groups = groups.into_iter().map(|e| e.1).collect::<Vec<_>>();
-    groups.sort_by_key(|c| c.degree_adjustment());
-
-    groups
+    //return a vector of groups
+    groups.into_iter().map(|e| e.1).collect::<Vec<_>>()
 }
 
 /// Makes sure the assertions are valid in the context of this computation and don't overlap with
@@ -198,16 +196,12 @@ fn prepare_assertions<E: FieldElement>(
     let mut result = BTreeSet::<Assertion<E>>::new();
 
     for assertion in assertions.into_iter() {
-        assertion
-            .validate_trace_width(trace_width)
-            .unwrap_or_else(|err| {
-                panic!("assertion {assertion} is invalid: {err}");
-            });
-        assertion
-            .validate_trace_length(trace_length)
-            .unwrap_or_else(|err| {
-                panic!("assertion {assertion} is invalid: {err}");
-            });
+        assertion.validate_trace_width(trace_width).unwrap_or_else(|err| {
+            panic!("assertion {assertion} is invalid: {err}");
+        });
+        assertion.validate_trace_length(trace_length).unwrap_or_else(|err| {
+            panic!("assertion {assertion} is invalid: {err}");
+        });
         for a in result.iter().filter(|a| a.column == assertion.column) {
             assert!(
                 !a.overlaps_with(&assertion),

@@ -3,15 +3,17 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
-use crate::{Blake3_192, Blake3_256, Example, ExampleOptions, HashFunction, Sha3_256};
 use core::marker::PhantomData;
-use log::debug;
 use std::time::Instant;
+
+use tracing::{field, info_span};
 use winterfell::{
-    crypto::{DefaultRandomCoin, ElementHasher},
-    math::{fields::f128::BaseElement, log2, FieldElement},
-    ProofOptions, Prover, StarkProof, Trace, TraceTable, VerifierError,
+    crypto::{DefaultRandomCoin, ElementHasher, MerkleTree},
+    math::{fields::f128::BaseElement, FieldElement},
+    Proof, ProofOptions, Prover, Trace, VerifierError,
 };
+
+use crate::{Blake3_192, Blake3_256, Example, ExampleOptions, HashFunction, Sha3_256};
 
 mod air;
 use air::{VdfAir, VdfInputs};
@@ -28,6 +30,7 @@ mod tests;
 const ALPHA: u64 = 3;
 const INV_ALPHA: u128 = 226854911280625642308916371969163307691;
 const FORTY_TWO: BaseElement = BaseElement::new(42);
+const TRACE_WIDTH: usize = 1;
 
 // VDF EXAMPLE
 // ================================================================================================
@@ -53,16 +56,13 @@ pub struct VdfExample<H: ElementHasher> {
 
 impl<H: ElementHasher> VdfExample<H> {
     pub fn new(num_steps: usize, options: ProofOptions) -> Self {
-        assert!(
-            num_steps.is_power_of_two(),
-            "number of steps must be a power of 2"
-        );
+        assert!(num_steps.is_power_of_two(), "number of steps must be a power of 2");
 
         // run the VDF function
         let now = Instant::now();
         let seed = BaseElement::new(123);
         let result = execute_vdf(seed, num_steps);
-        debug!(
+        println!(
             "Executed the VDF function for {} steps in {} ms",
             num_steps,
             now.elapsed().as_millis()
@@ -83,49 +83,50 @@ impl<H: ElementHasher> VdfExample<H> {
 
 impl<H: ElementHasher> Example for VdfExample<H>
 where
-    H: ElementHasher<BaseField = BaseElement>,
+    H: ElementHasher<BaseField = BaseElement> + Sync,
 {
-    fn prove(&self) -> StarkProof {
-        debug!(
-            "Generating proof for executing a VDF function for {} steps\n\
-            ---------------------",
-            self.num_steps
-        );
+    fn prove(&self) -> Proof {
+        println!("Generating proof for executing a VDF function for {} steps", self.num_steps);
 
         // create a prover
         let prover = VdfProver::<H>::new(self.options.clone());
 
         // generate execution trace
-        let now = Instant::now();
-        let trace = VdfProver::<H>::build_trace(self.seed, self.num_steps);
-
-        let trace_width = trace.width();
-        let trace_length = trace.length();
-        debug!(
-            "Generated execution trace of {} registers and 2^{} steps in {} ms",
-            trace_width,
-            log2(trace_length),
-            now.elapsed().as_millis()
-        );
+        let trace =
+            info_span!("generate_execution_trace", num_cols = TRACE_WIDTH, steps = field::Empty)
+                .in_scope(|| {
+                    let trace = VdfProver::<H>::build_trace(self.seed, self.num_steps);
+                    tracing::Span::current().record("steps", trace.length());
+                    trace
+                });
 
         // generate the proof
         prover.prove(trace).unwrap()
     }
 
-    fn verify(&self, proof: StarkProof) -> Result<(), VerifierError> {
-        let pub_inputs = VdfInputs {
-            seed: self.seed,
-            result: self.result,
-        };
-        winterfell::verify::<VdfAir, H, DefaultRandomCoin<H>>(proof, pub_inputs)
+    fn verify(&self, proof: Proof) -> Result<(), VerifierError> {
+        let pub_inputs = VdfInputs { seed: self.seed, result: self.result };
+        let acceptable_options =
+            winterfell::AcceptableOptions::OptionSet(vec![proof.options().clone()]);
+        winterfell::verify::<VdfAir, H, DefaultRandomCoin<H>, MerkleTree<H>>(
+            proof,
+            pub_inputs,
+            &acceptable_options,
+        )
     }
 
-    fn verify_with_wrong_inputs(&self, proof: StarkProof) -> Result<(), VerifierError> {
+    fn verify_with_wrong_inputs(&self, proof: Proof) -> Result<(), VerifierError> {
         let pub_inputs = VdfInputs {
             seed: self.seed,
             result: self.result + BaseElement::ONE,
         };
-        winterfell::verify::<VdfAir, H, DefaultRandomCoin<H>>(proof, pub_inputs)
+        let acceptable_options =
+            winterfell::AcceptableOptions::OptionSet(vec![proof.options().clone()]);
+        winterfell::verify::<VdfAir, H, DefaultRandomCoin<H>, MerkleTree<H>>(
+            proof,
+            pub_inputs,
+            &acceptable_options,
+        )
     }
 }
 

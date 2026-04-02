@@ -11,10 +11,12 @@
 //! these functions are much more efficient: their runtime complexity is O(`n` log `n`), where
 //! `n` is the domain size.
 
+use alloc::vec::Vec;
+
 use crate::{
     fft::fft_inputs::FftInputs,
     field::{FieldElement, StarkField},
-    utils::{get_power_series, log2},
+    utils::get_power_series,
 };
 
 pub mod fft_inputs;
@@ -23,8 +25,6 @@ mod serial;
 
 #[cfg(feature = "concurrent")]
 mod concurrent;
-
-use utils::collections::Vec;
 
 #[cfg(test)]
 mod tests;
@@ -63,7 +63,7 @@ const MIN_CONCURRENT_SIZE: usize = 1024;
 ///
 /// # Examples
 /// ```
-/// # use winter_math::{polynom, fft::*, get_power_series, log2};
+/// # use winter_math::{polynom, fft::*, get_power_series};
 /// # use winter_math::{fields::{f128::BaseElement}, FieldElement, StarkField};
 /// # use rand_utils::rand_vector;
 /// let n = 2048;
@@ -72,7 +72,7 @@ const MIN_CONCURRENT_SIZE: usize = 1024;
 /// let mut p: Vec<BaseElement> = rand_vector(n);
 ///
 /// // evaluate the polynomial over the domain using regular polynomial evaluation
-/// let g = BaseElement::get_root_of_unity(log2(n));
+/// let g = BaseElement::get_root_of_unity(n.ilog2());
 /// let domain = get_power_series(g, n);
 /// let expected = polynom::eval_many(&p, &domain);
 ///
@@ -87,10 +87,7 @@ where
     B: StarkField,
     E: FieldElement<BaseField = B>,
 {
-    assert!(
-        p.len().is_power_of_two(),
-        "number of coefficients must be a power of 2"
-    );
+    assert!(p.len().is_power_of_two(), "number of coefficients must be a power of 2");
     assert_eq!(
         p.len(),
         twiddles.len() * 2,
@@ -99,7 +96,7 @@ where
         twiddles.len()
     );
     assert!(
-        log2(p.len()) <= B::TWO_ADICITY,
+        p.len().ilog2() <= B::TWO_ADICITY,
         "multiplicative subgroup of size {} does not exist in the specified base field",
         p.len()
     );
@@ -146,7 +143,7 @@ where
 ///
 /// # Examples
 /// ```
-/// # use winter_math::{polynom, fft::*, log2, get_power_series};
+/// # use winter_math::{polynom, fft::*, get_power_series};
 /// # use winter_math::{fields::{f128::BaseElement}, FieldElement, StarkField};
 /// # use rand_utils::rand_vector;
 /// let n = 2048;
@@ -157,7 +154,7 @@ where
 /// let mut p: Vec<BaseElement> = rand_vector(n / blowup_factor);
 ///
 /// // evaluate the polynomial over the domain using regular polynomial evaluation
-/// let g = BaseElement::get_root_of_unity(log2(n));
+/// let g = BaseElement::get_root_of_unity(n.ilog2());
 /// let domain = get_power_series(g, n);
 /// let shifted_domain = domain.iter().map(|&x| x * offset).collect::<Vec<_>>();
 /// let expected = polynom::eval_many(&p, &shifted_domain);
@@ -178,14 +175,8 @@ where
     B: StarkField,
     E: FieldElement<BaseField = B>,
 {
-    assert!(
-        p.len().is_power_of_two(),
-        "number of coefficients must be a power of 2"
-    );
-    assert!(
-        blowup_factor.is_power_of_two(),
-        "blowup factor must be a power of 2"
-    );
+    assert!(p.len().is_power_of_two(), "number of coefficients must be a power of 2");
+    assert!(blowup_factor.is_power_of_two(), "blowup factor must be a power of 2");
     assert_eq!(
         p.len(),
         twiddles.len() * 2,
@@ -194,7 +185,7 @@ where
         twiddles.len()
     );
     assert!(
-        log2(p.len() * blowup_factor) <= B::TWO_ADICITY,
+        (p.len() * blowup_factor).ilog2() <= B::TWO_ADICITY,
         "multiplicative subgroup of size {} does not exist in the specified base field",
         p.len() * blowup_factor
     );
@@ -247,12 +238,11 @@ where
 /// Panics if:
 /// * Length of `evaluations` is not a power of two.
 /// * Length of `inv_twiddles` is not `evaluations.len()` / 2.
-/// * Field specified by `B` does not contain a multiplicative subgroup of size
-///   `evaluations.len()`.
+/// * Field specified by `B` does not contain a multiplicative subgroup of size `evaluations.len()`.
 ///
 /// # Examples
 /// ```
-/// # use winter_math::{polynom, fft::*, get_power_series, log2};
+/// # use winter_math::{polynom, fft::*, get_power_series};
 /// # use winter_math::{fields::{f128::BaseElement}, FieldElement, StarkField};
 /// # use rand_utils::rand_vector;
 /// let n = 2048;
@@ -261,7 +251,7 @@ where
 /// let p: Vec<BaseElement> = rand_vector(n);
 ///
 /// // evaluate the polynomial over the domain using regular polynomial evaluation
-/// let g = BaseElement::get_root_of_unity(log2(n));
+/// let g = BaseElement::get_root_of_unity(n.ilog2());
 /// let domain = get_power_series(g, n);
 /// let mut ys = polynom::eval_many(&p, &domain);
 ///
@@ -289,7 +279,7 @@ where
         inv_twiddles.len()
     );
     assert!(
-        log2(evaluations.len()) <= B::TWO_ADICITY,
+        evaluations.len().ilog2() <= B::TWO_ADICITY,
         "multiplicative subgroup of size {} does not exist in the specified base field",
         evaluations.len()
     );
@@ -332,13 +322,12 @@ where
 /// Panics if:
 /// * Length of `evaluations` is not a power of two.
 /// * Length of `inv_twiddles` is not `evaluations.len()` / 2.
-/// * Field specified by `B` does not contain a multiplicative subgroup of size
-///   `evaluations.len()`.
+/// * Field specified by `B` does not contain a multiplicative subgroup of size `evaluations.len()`.
 /// * `domain_offset` is ZERO.
 ///
 /// # Examples
 /// ```
-/// # use winter_math::{polynom, fft::*, get_power_series, log2};
+/// # use winter_math::{polynom, fft::*, get_power_series};
 /// # use winter_math::{fields::{f128::BaseElement}, FieldElement, StarkField};
 /// # use rand_utils::rand_vector;
 /// let n = 2048;
@@ -348,7 +337,7 @@ where
 /// let p: Vec<BaseElement> = rand_vector(n);
 ///
 /// // evaluate the polynomial over the domain using regular polynomial evaluation
-/// let g = BaseElement::get_root_of_unity(log2(n));
+/// let g = BaseElement::get_root_of_unity(n.ilog2());
 /// let domain = get_power_series(g, n);
 /// let shifted_domain = domain.iter().map(|&x| x * offset).collect::<Vec<_>>();
 /// let mut ys = polynom::eval_many(&p, &shifted_domain);
@@ -380,7 +369,7 @@ pub fn interpolate_poly_with_offset<B, E>(
         inv_twiddles.len()
     );
     assert!(
-        log2(evaluations.len()) <= B::TWO_ADICITY,
+        evaluations.len().ilog2() <= B::TWO_ADICITY,
         "multiplicative subgroup of size {} does not exist in the specified base field",
         evaluations.len()
     );
@@ -431,7 +420,7 @@ where
         twiddles.len()
     );
     assert!(
-        log2(values.len()) <= B::TWO_ADICITY,
+        values.len().ilog2() <= B::TWO_ADICITY,
         "multiplicative subgroup of size {} does not exist in the specified base field",
         values.len()
     );
@@ -467,15 +456,12 @@ pub fn get_twiddles<B>(domain_size: usize) -> Vec<B>
 where
     B: StarkField,
 {
+    assert!(domain_size.is_power_of_two(), "domain size must be a power of 2");
     assert!(
-        domain_size.is_power_of_two(),
-        "domain size must be a power of 2"
-    );
-    assert!(
-        log2(domain_size) <= B::TWO_ADICITY,
+        domain_size.ilog2() <= B::TWO_ADICITY,
         "multiplicative subgroup of size {domain_size} does not exist in the specified base field"
     );
-    let root = B::get_root_of_unity(log2(domain_size));
+    let root = B::get_root_of_unity(domain_size.ilog2());
     let mut twiddles = get_power_series(root, domain_size / 2);
     permute(&mut twiddles);
     twiddles
@@ -506,15 +492,12 @@ pub fn get_inv_twiddles<B>(domain_size: usize) -> Vec<B>
 where
     B: StarkField,
 {
+    assert!(domain_size.is_power_of_two(), "domain size must be a power of 2");
     assert!(
-        domain_size.is_power_of_two(),
-        "domain size must be a power of 2"
-    );
-    assert!(
-        log2(domain_size) <= B::TWO_ADICITY,
+        domain_size.ilog2() <= B::TWO_ADICITY,
         "multiplicative subgroup of size {domain_size} does not exist in the specified base field"
     );
-    let root = B::get_root_of_unity(log2(domain_size));
+    let root = B::get_root_of_unity(domain_size.ilog2());
     let inv_root = root.exp((domain_size as u32 - 1).into());
     let mut inv_twiddles = get_power_series(inv_root, domain_size / 2);
     permute(&mut inv_twiddles);
@@ -544,18 +527,13 @@ where
 ///
 /// # Examples
 /// ```
-/// # use winter_math::{polynom, fft::*, get_power_series, log2};
+/// # use winter_math::{polynom, fft::*, get_power_series};
 /// # use winter_math::{fields::{f128::BaseElement}, FieldElement, StarkField};
 /// let offset = BaseElement::GENERATOR;
 /// // p(x) = x^2 + 1
-/// let p = [
-///     BaseElement::new(1),
-///     BaseElement::ZERO,
-///     BaseElement::new(1),
-///     BaseElement::ZERO,
-/// ];
+/// let p = [BaseElement::new(1), BaseElement::ZERO, BaseElement::new(1), BaseElement::ZERO];
 ///
-/// let g = BaseElement::get_root_of_unity(log2(p.len()));
+/// let g = BaseElement::get_root_of_unity(p.len().ilog2());
 /// let domain = get_power_series(g, p.len());
 /// let shifted_domain = domain.iter().map(|&x| x * offset).collect::<Vec<_>>();
 /// let evaluations = polynom::eval_many(&p, &shifted_domain);
@@ -572,7 +550,7 @@ where
         "number of evaluations must be a power of 2"
     );
     assert!(
-        log2(evaluations.len()) <= B::TWO_ADICITY,
+        evaluations.len().ilog2() <= B::TWO_ADICITY,
         "multiplicative subgroup of size {} does not exist in the specified base field",
         evaluations.len()
     );

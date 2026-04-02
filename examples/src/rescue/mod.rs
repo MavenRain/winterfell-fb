@@ -3,15 +3,17 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
-use crate::{Blake3_192, Blake3_256, Example, ExampleOptions, HashFunction, Sha3_256};
 use core::marker::PhantomData;
-use log::debug;
 use std::time::Instant;
+
+use tracing::{field, info_span};
 use winterfell::{
-    crypto::{DefaultRandomCoin, ElementHasher},
-    math::{fields::f128::BaseElement, log2, FieldElement},
-    ProofOptions, Prover, StarkProof, Trace, TraceTable, VerifierError,
+    crypto::{DefaultRandomCoin, ElementHasher, MerkleTree},
+    math::{fields::f128::BaseElement, FieldElement},
+    Proof, ProofOptions, Prover, Trace, VerifierError,
 };
+
+use crate::{Blake3_192, Blake3_256, Example, ExampleOptions, HashFunction, Sha3_256};
 
 #[allow(clippy::module_inception)]
 pub(crate) mod rescue;
@@ -42,18 +44,15 @@ pub fn get_example(
     let (options, hash_fn) = options.to_proof_options(42, 4);
 
     match hash_fn {
-        HashFunction::Blake3_192 => Ok(Box::new(RescueExample::<Blake3_192>::new(
-            chain_length,
-            options,
-        ))),
-        HashFunction::Blake3_256 => Ok(Box::new(RescueExample::<Blake3_256>::new(
-            chain_length,
-            options,
-        ))),
-        HashFunction::Sha3_256 => Ok(Box::new(RescueExample::<Sha3_256>::new(
-            chain_length,
-            options,
-        ))),
+        HashFunction::Blake3_192 => {
+            Ok(Box::new(RescueExample::<Blake3_192>::new(chain_length, options)))
+        },
+        HashFunction::Blake3_256 => {
+            Ok(Box::new(RescueExample::<Blake3_256>::new(chain_length, options)))
+        },
+        HashFunction::Sha3_256 => {
+            Ok(Box::new(RescueExample::<Sha3_256>::new(chain_length, options)))
+        },
         _ => Err("The specified hash function cannot be used with this example.".to_string()),
     }
 }
@@ -68,16 +67,13 @@ pub struct RescueExample<H: ElementHasher> {
 
 impl<H: ElementHasher> RescueExample<H> {
     pub fn new(chain_length: usize, options: ProofOptions) -> Self {
-        assert!(
-            chain_length.is_power_of_two(),
-            "chain length must a power of 2"
-        );
+        assert!(chain_length.is_power_of_two(), "chain length must a power of 2");
         let seed = [BaseElement::from(42u8), BaseElement::from(43u8)];
 
         // compute the sequence of hashes using external implementation of Rescue hash
         let now = Instant::now();
         let result = compute_hash_chain(seed, chain_length);
-        debug!(
+        println!(
             "Computed a chain of {} Rescue hashes in {} ms",
             chain_length,
             now.elapsed().as_millis(),
@@ -98,48 +94,51 @@ impl<H: ElementHasher> RescueExample<H> {
 
 impl<H: ElementHasher> Example for RescueExample<H>
 where
-    H: ElementHasher<BaseField = BaseElement>,
+    H: ElementHasher<BaseField = BaseElement> + Sync,
 {
-    fn prove(&self) -> StarkProof {
+    fn prove(&self) -> Proof {
         // generate the execution trace
-        debug!(
-            "Generating proof for computing a chain of {} Rescue hashes\n\
-            ---------------------",
-            self.chain_length
-        );
+        println!("Generating proof for computing a chain of {} Rescue hashes", self.chain_length);
 
         // create a prover
         let prover = RescueProver::<H>::new(self.options.clone());
 
-        // generate the execution trace
-        let now = Instant::now();
-        let trace = prover.build_trace(self.seed, self.chain_length);
-        let trace_length = trace.length();
-        debug!(
-            "Generated execution trace of {} registers and 2^{} steps in {} ms",
-            trace.width(),
-            log2(trace_length),
-            now.elapsed().as_millis()
-        );
+        // generate execution trace
+        let trace =
+            info_span!("generate_execution_trace", num_cols = TRACE_WIDTH, steps = field::Empty)
+                .in_scope(|| {
+                    let trace = prover.build_trace(self.seed, self.chain_length);
+                    tracing::Span::current().record("steps", trace.length());
+                    trace
+                });
 
         // generate the proof
         prover.prove(trace).unwrap()
     }
 
-    fn verify(&self, proof: StarkProof) -> Result<(), VerifierError> {
-        let pub_inputs = PublicInputs {
-            seed: self.seed,
-            result: self.result,
-        };
-        winterfell::verify::<RescueAir, H, DefaultRandomCoin<H>>(proof, pub_inputs)
+    fn verify(&self, proof: Proof) -> Result<(), VerifierError> {
+        let pub_inputs = PublicInputs { seed: self.seed, result: self.result };
+        let acceptable_options =
+            winterfell::AcceptableOptions::OptionSet(vec![proof.options().clone()]);
+        winterfell::verify::<RescueAir, H, DefaultRandomCoin<H>, MerkleTree<H>>(
+            proof,
+            pub_inputs,
+            &acceptable_options,
+        )
     }
 
-    fn verify_with_wrong_inputs(&self, proof: StarkProof) -> Result<(), VerifierError> {
+    fn verify_with_wrong_inputs(&self, proof: Proof) -> Result<(), VerifierError> {
         let pub_inputs = PublicInputs {
             seed: self.seed,
             result: [self.result[0], self.result[1] + BaseElement::ONE],
         };
-        winterfell::verify::<RescueAir, H, DefaultRandomCoin<H>>(proof, pub_inputs)
+        let acceptable_options =
+            winterfell::AcceptableOptions::OptionSet(vec![proof.options().clone()]);
+        winterfell::verify::<RescueAir, H, DefaultRandomCoin<H>, MerkleTree<H>>(
+            proof,
+            pub_inputs,
+            &acceptable_options,
+        )
     }
 }
 

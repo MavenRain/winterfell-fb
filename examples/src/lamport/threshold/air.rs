@@ -3,16 +3,17 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
+use winterfell::{
+    math::{fields::f128::BaseElement, FieldElement, StarkField, ToElements},
+    Air, AirContext, Assertion, EvaluationFrame, ProofOptions, TraceInfo,
+    TransitionConstraintDegree,
+};
+
 use super::{
     super::rescue, HASH_CYCLE_LENGTH as HASH_CYCLE_LEN, SIG_CYCLE_LENGTH as SIG_CYCLE_LEN,
     TRACE_WIDTH,
 };
 use crate::utils::{are_equal, is_binary, is_zero, not, EvaluationResult};
-use winterfell::{
-    math::{fields::f128::BaseElement, log2, FieldElement, StarkField, ToElements},
-    Air, AirContext, Assertion, EvaluationFrame, ProofOptions, TraceInfo,
-    TransitionConstraintDegree,
-};
 
 // CONSTANTS
 // ================================================================================================
@@ -171,7 +172,7 @@ impl Air for LamportThresholdAir {
         // these steps depend on the depth of the public key Merkle tree; for example, if the Merkle
         // tree has 4 elements, then the steps are: 24, 1048, 2072, 3096
         let num_cycles = self.num_pub_keys.next_power_of_two();
-        let merkle_root_offset = (log2(num_cycles) + 1) as usize * HASH_CYCLE_LEN;
+        let merkle_root_offset = (num_cycles.ilog2() + 1) as usize * HASH_CYCLE_LEN;
 
         // distinct key indexes should be used; the sequence starts at the last index of the tree
         // (to pad the first cycle) and then wraps around and proceeds with index 0, 1, 2 etc.
@@ -188,7 +189,8 @@ impl Air for LamportThresholdAir {
 
         let last_step = self.trace_length() - 1;
         assertions.extend_from_slice(&[
-            // signature counter starts at zero and terminates with the expected count of signatures
+            // signature counter starts at zero and terminates with the expected count of
+            // signatures
             Assertion::single(27, 0, BaseElement::ZERO),
             Assertion::single(27, last_step, BaseElement::from(self.num_signatures as u64)),
             // the first public key for merkle path verification should be a zero key (it is only
@@ -214,7 +216,7 @@ impl Air for LamportThresholdAir {
         for (i, value) in powers_of_two.iter_mut().enumerate().skip(1) {
             // we switch to a new power of two once every 8 steps this. is so that a
             // new power of two is available for every hash cycle
-            if i % HASH_CYCLE_LEN == 0 {
+            if i.is_multiple_of(HASH_CYCLE_LEN) {
                 current_power_of_two *= TWO;
             }
             *value = current_power_of_two;
@@ -228,8 +230,8 @@ impl Air for LamportThresholdAir {
         let mut m1_bits = Vec::with_capacity(SIG_CYCLE_LEN);
         for i in 0..SIG_CYCLE_LEN {
             let cycle_num = i / HASH_CYCLE_LEN;
-            m0_bits.push(BaseElement::from((m0 >> cycle_num) & 1));
-            m1_bits.push(BaseElement::from((m1 >> cycle_num) & 1));
+            m0_bits.push(BaseElement::new((m0 >> cycle_num) & 1));
+            m1_bits.push(BaseElement::new((m1 >> cycle_num) & 1));
         }
         result.push(m0_bits);
         result.push(m1_bits);

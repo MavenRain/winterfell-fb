@@ -3,10 +3,11 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
+use alloc::vec::Vec;
 use core::marker::PhantomData;
+
 use crypto::{ElementHasher, Hasher, RandomCoin};
 use math::FieldElement;
-use utils::collections::Vec;
 
 // PROVER CHANNEL TRAIT
 // ================================================================================================
@@ -22,20 +23,18 @@ use utils::collections::Vec;
 /// commitments the prover has written into the channel up to this point.
 pub trait ProverChannel<E: FieldElement> {
     /// Hash function used by the prover to commit to polynomial evaluations.
-    type Hasher: Hasher;
+    type Hasher: ElementHasher<BaseField = E::BaseField>;
 
     /// Sends a layer commitment to the verifier.
     ///
-    /// A layer commitment is a root of a Merkle tree built from evaluations of a polynomial
-    /// at a given layer. The Merkle tree is built by first transposing evaluations into a
-    /// two-dimensional matrix where each row contains values needed to compute a single
-    /// value of the next FRI layer, and then putting each row of the matrix into a single
-    /// leaf of the Merkle tree. Thus, the number of elements grouped into a single leaf is
-    /// equal to the `folding_factor` used for FRI layer construction.
-    fn commit_fri_layer(
-        &mut self,
-        layer_root: <<Self as ProverChannel<E>>::Hasher as Hasher>::Digest,
-    );
+    /// A layer commitment is the commitment string of a vector commitment to the vector of
+    /// evaluations of a polynomial at a given layer. The vector commitment is built by
+    /// first transposing evaluations into a two-dimensional matrix where each row contains
+    /// values needed to compute a single value of the next FRI layer, and then computing
+    /// the hash of each row to get one entry of the vector being committed to. Thus, the number
+    /// of elements grouped into a single leaf is equal to the `folding_factor` used for FRI layer
+    /// construction.
+    fn commit_fri_layer(&mut self, layer_root: <Self::Hasher as Hasher>::Digest);
 
     /// Returns a random α drawn uniformly at random from the entire field.
     ///
@@ -80,18 +79,12 @@ where
     /// * `domain_size` is smaller than 8 or is not a power of two.
     /// * `num_queries` is zero.
     pub fn new(domain_size: usize, num_queries: usize) -> Self {
-        assert!(
-            domain_size >= 8,
-            "domain size must be at least 8, but was {domain_size}"
-        );
+        assert!(domain_size >= 8, "domain size must be at least 8, but was {domain_size}");
         assert!(
             domain_size.is_power_of_two(),
             "domain size must be a power of two, but was {domain_size}"
         );
-        assert!(
-            num_queries > 0,
-            "number of queries must be greater than zero"
-        );
+        assert!(num_queries > 0, "number of queries must be greater than zero");
         DefaultProverChannel {
             public_coin: RandomCoin::new(&[]),
             commitments: Vec::new(),
@@ -105,15 +98,15 @@ where
     /// layer should be queried.
     ///
     /// The positions are pseudo-randomly generated based on the values the prover has written
-    /// into this channel.
+    /// into this channel and a PoW nonce.
     ///
     /// # Panics
     /// Panics if the specified number of unique positions could not be drawn from the specified
     /// domain. Both number of queried positions and domain size are specified during
     /// construction of the channel.
-    pub fn draw_query_positions(&mut self) -> Vec<usize> {
+    pub fn draw_query_positions(&mut self, nonce: u64) -> Vec<usize> {
         self.public_coin
-            .draw_integers(self.num_queries, self.domain_size)
+            .draw_integers(self.num_queries, self.domain_size, nonce)
             .expect("failed to draw query position")
     }
 

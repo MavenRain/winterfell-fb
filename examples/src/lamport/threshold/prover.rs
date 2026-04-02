@@ -3,15 +3,21 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
-use super::{
-    get_power_series, rescue, AggPublicKey, BaseElement, DefaultRandomCoin, ElementHasher,
-    FieldElement, LamportThresholdAir, PhantomData, ProofOptions, Prover, PublicInputs, Signature,
-    StarkField, TraceTable, HASH_CYCLE_LENGTH, NUM_HASH_ROUNDS, SIG_CYCLE_LENGTH, TRACE_WIDTH,
-};
 use std::collections::HashMap;
 
 #[cfg(feature = "concurrent")]
 use winterfell::iterators::*;
+use winterfell::{
+    crypto::MerkleTree, matrix::ColMatrix, AuxRandElements, CompositionPoly, CompositionPolyTrace,
+    ConstraintCompositionCoefficients, DefaultConstraintCommitment, DefaultConstraintEvaluator,
+    DefaultTraceLde, PartitionOptions, StarkDomain, TraceInfo, TracePolyTable, TraceTable,
+};
+
+use super::{
+    get_power_series, rescue, AggPublicKey, BaseElement, DefaultRandomCoin, ElementHasher,
+    FieldElement, LamportThresholdAir, PhantomData, ProofOptions, Prover, PublicInputs, Signature,
+    StarkField, HASH_CYCLE_LENGTH, NUM_HASH_ROUNDS, SIG_CYCLE_LENGTH, TRACE_WIDTH,
+};
 
 // CONSTANTS
 // ================================================================================================
@@ -131,13 +137,20 @@ impl<H: ElementHasher> LamportThresholdProver<H> {
 
 impl<H: ElementHasher> Prover for LamportThresholdProver<H>
 where
-    H: ElementHasher<BaseField = BaseElement>,
+    H: ElementHasher<BaseField = BaseElement> + Sync,
 {
     type BaseField = BaseElement;
     type Air = LamportThresholdAir;
     type Trace = TraceTable<BaseElement>;
     type HashFn = H;
+    type VC = MerkleTree<H>;
     type RandomCoin = DefaultRandomCoin<Self::HashFn>;
+    type TraceLde<E: FieldElement<BaseField = Self::BaseField>> =
+        DefaultTraceLde<E, Self::HashFn, Self::VC>;
+    type ConstraintCommitment<E: FieldElement<BaseField = Self::BaseField>> =
+        DefaultConstraintCommitment<E, H, Self::VC>;
+    type ConstraintEvaluator<'a, E: FieldElement<BaseField = Self::BaseField>> =
+        DefaultConstraintEvaluator<'a, Self::Air, E>;
 
     fn get_pub_inputs(&self, _trace: &Self::Trace) -> PublicInputs {
         self.pub_inputs.clone()
@@ -145,6 +158,40 @@ where
 
     fn options(&self) -> &ProofOptions {
         &self.options
+    }
+
+    fn new_trace_lde<E: FieldElement<BaseField = Self::BaseField>>(
+        &self,
+        trace_info: &TraceInfo,
+        main_trace: &ColMatrix<Self::BaseField>,
+        domain: &StarkDomain<Self::BaseField>,
+        partition_option: PartitionOptions,
+    ) -> (Self::TraceLde<E>, TracePolyTable<E>) {
+        DefaultTraceLde::new(trace_info, main_trace, domain, partition_option)
+    }
+
+    fn new_evaluator<'a, E: FieldElement<BaseField = Self::BaseField>>(
+        &self,
+        air: &'a Self::Air,
+        aux_rand_elements: Option<AuxRandElements<E>>,
+        composition_coefficients: ConstraintCompositionCoefficients<E>,
+    ) -> Self::ConstraintEvaluator<'a, E> {
+        DefaultConstraintEvaluator::new(air, aux_rand_elements, composition_coefficients)
+    }
+
+    fn build_constraint_commitment<E: FieldElement<BaseField = Self::BaseField>>(
+        &self,
+        composition_poly_trace: CompositionPolyTrace<E>,
+        num_constraint_composition_columns: usize,
+        domain: &StarkDomain<Self::BaseField>,
+        partition_options: PartitionOptions,
+    ) -> (Self::ConstraintCommitment<E>, CompositionPoly<E>) {
+        DefaultConstraintCommitment::new(
+            composition_poly_trace,
+            num_constraint_composition_columns,
+            domain,
+            partition_options,
+        )
     }
 }
 
@@ -219,8 +266,8 @@ fn update_sig_verification_state(
     } else {
         // for the 8th step of very cycle do the following:
 
-        let m0_bit = BaseElement::from((sig_info.m0 >> cycle_num) & 1);
-        let m1_bit = BaseElement::from((sig_info.m1 >> cycle_num) & 1);
+        let m0_bit = BaseElement::new((sig_info.m0 >> cycle_num) & 1);
+        let m1_bit = BaseElement::new((sig_info.m1 >> cycle_num) & 1);
         let mp_bit = merkle_path_idx[0];
 
         // copy next set of public keys into the registers computing hash of the public key
@@ -235,14 +282,8 @@ fn update_sig_verification_state(
         );
 
         // copy next set of private keys into the registers computing private key hashes
-        init_hash_state(
-            sec_key_1_hash,
-            &sig_info.key_schedule.sec_keys1[cycle_num + 1],
-        );
-        init_hash_state(
-            sec_key_2_hash,
-            &sig_info.key_schedule.sec_keys2[cycle_num + 1],
-        );
+        init_hash_state(sec_key_1_hash, &sig_info.key_schedule.sec_keys1[cycle_num + 1]);
+        init_hash_state(sec_key_2_hash, &sig_info.key_schedule.sec_keys2[cycle_num + 1]);
 
         // update merkle path index accumulator with the next index bit
         update_merkle_path_index(
@@ -325,7 +366,7 @@ fn update_merkle_path_index(
     let index_bit = state[0];
     // the cycle is offset by +1 because the first node in the Merkle path is redundant and we
     // get it by hashing the public key
-    state[0] = BaseElement::from((index >> (cycle_num + 1)) & 1);
+    state[0] = BaseElement::new((index >> (cycle_num + 1)) & 1);
     state[1] += power_of_two * index_bit;
 }
 

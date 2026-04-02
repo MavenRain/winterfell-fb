@@ -1,16 +1,16 @@
 [package]
 name = "winter-utils"
-version = "0.6.1"
+version = "0.13.1"
 description = "Utilities for the Winterfell STARK prover/verifier"
 authors = ["winterfell contributors"]
 readme = "README.md"
 license = "MIT"
 repository = "https://github.com/novifinancial/winterfell"
-documentation = "https://docs.rs/winter-utils/0.6.1"
+documentation = "https://docs.rs/winter-utils/0.13.1"
 categories = ["cryptography", "no-std"]
 keywords = ["serialization", "transmute"]
 edition = "2021"
-rust-version = "1.67"
+rust-version = "1.87"
 
 [lib]
 bench = false
@@ -21,4 +21,7 @@ default = ["std"]
 std = []
 
 [dependencies]
-rayon = { version = "1.7", optional = true }
+rayon = { version = "1.10", optional = true }
+
+[dev-dependencies]
+proptest = "1.6"
